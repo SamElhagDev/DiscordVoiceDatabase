@@ -211,7 +211,7 @@ class DiscordBot(commands.Bot):
         await self.process_commands(message)
 
     async def on_command_completion(self, context: Context) -> None:
-        """
+        """>>
         The code in this event is executed every time a normal command has been *successfully* executed.
 
         :param context: The context of the command that has been executed.
