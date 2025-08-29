@@ -1,4 +1,4 @@
-name: Build on Remote Linux Docker from Windows Runner (pwsh)
+name: Build on Remote Linux Docker from Windows Runner (fixed pwsh)
 
 on:
   push:
@@ -13,36 +13,82 @@ concurrency:
 
 jobs:
   build-and-run:
-    runs-on: [self-hosted, windows, x64]  # <- your Windows runner labels
+    runs-on: [self-hosted, windows, x64]  # your Windows runner labels
     env:
       REMOTE_DOCKER: tcp://127.0.0.1:23750
     steps:
       - uses: actions/checkout@v4
 
-     # Install PowerShell 7 if missing (no version hardcoding)
-      - name: Ensure PowerShell 7
+      # Install PowerShell 7 if missing, then export its absolute path as $env:PWSH
+      - name: Ensure PowerShell 7 and export path
         shell: powershell
         run: |
-          if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+          $pwshTarget = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+          if (-not (Test-Path $pwshTarget)) {
+            Write-Host "Installing PowerShell 7..."
             Set-ExecutionPolicy Bypass -Scope Process -Force
             iex "& { $(irm https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
           }
-          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion'
+          if (-not (Test-Path $pwshTarget)) { throw "pwsh not found after install at $pwshTarget" }
+          "PWSH=$pwshTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          
+      - name: Verify pwsh
+        shell: powershell
+        run: '& $env:PWSH -NoLogo -NoProfile -Command "$PSVersionTable.PSVersion"'
+
       # Tunnel Windows -> Linux VM docker.sock (add your VM host/user as secrets)
       - name: Open SSH tunnel to Linux VM docker
         id: tunnel
-        shell: pwsh
+        shell: powershell
         run: |
-          $p = Start-Process -NoNewWindow ssh `
-            -PassThru `
-            -ArgumentList @(
-              "-o","ExitOnForwardFailure=yes",
-              "-N","-L","23750:/var/run/docker.sock",
-              "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
-            )
+          $args = @(
+            "-o","ExitOnForwardFailure=yes",
+            "-N","-L","23750:/var/run/docker.sock",
+            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
+          )
+          $p = Start-Process -NoNewWindow -PassThru -FilePath ssh -ArgumentList $args
           Set-Content -Path "$env:RUNNER_TEMP\ssh_tunnel_pid.txt" -Value $p.Id
           Start-Sleep -Seconds 2
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          endpoint: ${{ env.REMOTE_DOCKER }}
+
+      # Login on the REMOTE daemon (where pulls/builds actually happen)
+      - name: Login to Docker Hub on remote daemon
+        shell: powershell
+        run: |
+          "${{ secrets.DOCKERHUB_TOKEN }}" | docker -H $env:REMOTE_DOCKER login `
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Sanity check remote docker
+        shell: powershell
+        run: docker -H $env:REMOTE_DOCKER info
+
+      - name: Build image (remote daemon)
+        shell: powershell
+        run: docker -H $env:REMOTE_DOCKER build --pull -t my-image-name:${{ github.sha }} .
+
+      - name: Stop previous container (if any)
+        shell: powershell
+        continue-on-error: true
+        run: docker -H $env:REMOTE_DOCKER rm -f my-image
+
+      - name: Run container (remote)
+        shell: powershell
+        run: |
+          docker -H $env:REMOTE_DOCKER run -d --name my-image `
+            --restart unless-stopped `
+            -p 8080:8080 `
+            my-image-name:${{ github.sha }}
+
+      # Always close the tunnel so you don’t leave orphan ssh.exe processes
+      - name: Close SSH tunnel
+        if: always()
+        shell: powershell
+        run: |
+          $pidFile = "$env:RUNNER_TEMP\ssh_tunnel_pid.txt"
+          if (Test-Path $pidFile) {
+            $pid = Get-Content $pidFile
+            if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
+          }
