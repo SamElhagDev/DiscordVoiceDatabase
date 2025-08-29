@@ -35,13 +35,12 @@ jobs:
       # 2) On the Linux VM: install/start a TCP->UNIX bridge on 127.0.0.1:23750
       - name: Start remote docker TCP bridge (socat)
         shell: powershell
-        run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} `
-            "set -e; \
-             (command -v socat >/dev/null 2>&1) || (sudo apt-get update && sudo apt-get install -y socat); \
-             pkill -f 'socat TCP-LISTEN:23750' || true; \
-             nohup socat TCP-LISTEN:23750,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock >/dev/null 2>&1 & echo OK"
-
+        run: >
+          ssh "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
+          "set -e; command -v socat >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y socat);
+          pkill -f 'socat TCP-LISTEN:23750' || true;
+          nohup socat TCP-LISTEN:23750,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock >/dev/null 2>&1 & echo OK"
+          
       # 3) Open local tunnel: Windows:23750 -> VM:127.0.0.1:23750 (TCP)
       - name: Open SSH tunnel to Linux VM docker (TCP bridge)
         id: tunnel
