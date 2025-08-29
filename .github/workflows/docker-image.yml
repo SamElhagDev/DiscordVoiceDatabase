@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-and-run:
     # Use the exact labels you gave your runner during ./config.sh
-    runs-on: [self-hosted, linux, ws-server]
+    runs-on: [self-hosted, linux, x64]
 
     steps:
       - name: Checkout
