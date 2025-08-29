@@ -1,4 +1,4 @@
-name: Build on Remote Linux Docker from Windows Runner (fixed pwsh)
+name: Build on Remote Linux Docker from Windows Runner (TCP bridge)
 
 on:
   push:
@@ -13,13 +13,13 @@ concurrency:
 
 jobs:
   build-and-run:
-    runs-on: [self-hosted, windows, x64]  # your Windows runner labels
+    runs-on: [self-hosted, windows, X64]  # your Windows runner labels
     env:
       REMOTE_DOCKER: tcp://127.0.0.1:23750
     steps:
       - uses: actions/checkout@v4
 
-      # Install PowerShell 7 if missing, then export its absolute path as $env:PWSH
+      # 1) Ensure PowerShell 7 path var (OPTIONAL; keep using Windows PowerShell as the step shell)
       - name: Ensure PowerShell 7 and export path
         shell: powershell
         run: |
@@ -31,35 +31,53 @@ jobs:
           }
           if (-not (Test-Path $pwshTarget)) { throw "pwsh not found after install at $pwshTarget" }
           "PWSH=$pwshTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          
-      # Tunnel Windows -> Linux VM docker.sock (add your VM host/user as secrets)
-      - name: Open SSH tunnel to Linux VM docker
+
+      # 2) On the Linux VM: install/start a TCP->UNIX bridge on 127.0.0.1:23750
+      - name: Start remote docker TCP bridge (socat)
+        shell: powershell
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} `
+            "set -e; \
+             (command -v socat >/dev/null 2>&1) || (sudo apt-get update && sudo apt-get install -y socat); \
+             pkill -f 'socat TCP-LISTEN:23750' || true; \
+             nohup socat TCP-LISTEN:23750,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock >/dev/null 2>&1 & echo OK"
+
+      # 3) Open local tunnel: Windows:23750 -> VM:127.0.0.1:23750 (TCP)
+      - name: Open SSH tunnel to Linux VM docker (TCP bridge)
         id: tunnel
         shell: powershell
         run: |
           $args = @(
             "-o","ExitOnForwardFailure=yes",
-            "-N","-L","23750:/var/run/docker.sock",
+            "-N","-L","23750:127.0.0.1:23750",
             "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
           )
           $p = Start-Process -NoNewWindow -PassThru -FilePath ssh -ArgumentList $args
           Set-Content -Path "$env:RUNNER_TEMP\ssh_tunnel_pid.txt" -Value $p.Id
           Start-Sleep -Seconds 2
 
+      # 4) Quick ping of remote API through the tunnel (should print "OK")
+      - name: Sanity check Docker API tunnel
+        shell: powershell
+        run: |
+          try {
+            $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:23750/_ping"
+            Write-Host "Docker API /_ping -> $($resp.Content)"
+          } catch {
+            throw "Tunnel not up: $($_.Exception.Message)"
+          }
+
+      # 5) Buildx using the tunneled daemon
       - uses: docker/setup-buildx-action@v3
         with:
           endpoint: ${{ env.REMOTE_DOCKER }}
 
-      # Login on the REMOTE daemon (where pulls/builds actually happen)
+      # 6) Login on the REMOTE daemon (pulls happen there)
       - name: Login to Docker Hub on remote daemon
         shell: powershell
         run: |
           "${{ secrets.DOCKERHUB_TOKEN }}" | docker -H $env:REMOTE_DOCKER login `
             -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Sanity check remote docker
-        shell: powershell
-        run: docker -H $env:REMOTE_DOCKER info
 
       - name: Build image (remote daemon)
         shell: powershell
@@ -78,7 +96,7 @@ jobs:
             -p 8080:8080 `
             my-image-name:${{ github.sha }}
 
-      # Always close the tunnel so you don’t leave orphan ssh.exe processes
+      # 7) Clean up: close tunnel & stop remote socat
       - name: Close SSH tunnel
         if: always()
         shell: powershell
@@ -88,3 +106,9 @@ jobs:
             $pid = Get-Content $pidFile
             if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
           }
+
+      - name: Stop remote docker TCP bridge
+        if: always()
+        shell: powershell
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "pkill -f 'socat TCP-LISTEN:23750' || true"
