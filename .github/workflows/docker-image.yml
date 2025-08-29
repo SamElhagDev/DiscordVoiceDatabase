@@ -1,4 +1,4 @@
-name: Build & Run on My Windows Server (Linux VM)
+name: Build on Remote Linux Docker from Windows Runner
 
 on:
   push:
@@ -13,26 +13,38 @@ concurrency:
 
 jobs:
   build-and-run:
-    runs-on: [self-hosted, linux, ws-server]   # <- your runner labels
+    runs-on: [self-hosted, windows, X64]  # <- your Windows runner labels
+    env:
+      REMOTE_DOCKER: tcp://127.0.0.1:23750
     steps:
       - uses: actions/checkout@v4
 
+      # Tunnel Windows -> Linux VM docker.sock (add your VM host/user as secrets)
+      - name: Open SSH tunnel to Linux VM docker
+        shell: pwsh
+        run: |
+          Start-Process -NoNewWindow ssh `
+            -ArgumentList @("-o","ExitOnForwardFailure=yes","-N","-L","23750:/var/run/docker.sock","${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}")
+          Start-Sleep -Seconds 2
+
       - uses: docker/setup-buildx-action@v3
+        with:
+          endpoint: ${{ env.REMOTE_DOCKER }}
 
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build image
-        run: docker build --pull -t my-image-name:${{ github.sha }} .
+      - name: Build image (remote daemon)
+        run: docker -H ${{ env.REMOTE_DOCKER }} build --pull -t my-image-name:${{ github.sha }} .
 
       - name: Stop previous container (if any)
-        run: docker rm -f my-image || true
+        run: docker -H ${{ env.REMOTE_DOCKER }} rm -f my-image || true
 
-      - name: Run container
+      - name: Run container (remote)
         run: |
-          docker run -d --name my-image \
-            --restart unless-stopped \
-            -p 8080:8080 \
+          docker -H ${{ env.REMOTE_DOCKER }} run -d --name my-image `
+            --restart unless-stopped `
+            -p 8080:8080 `
             my-image-name:${{ github.sha }}
