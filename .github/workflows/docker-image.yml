@@ -19,19 +19,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Ensure PowerShell 7 (pwsh) is available on the Windows runner
-      - name: Install PowerShell 7 if missing
+     # Install PowerShell 7 if missing (no version hardcoding)
+      - name: Ensure PowerShell 7
         shell: powershell
         run: |
           if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
-            $msi = "$env:RUNNER_TEMP\pwsh.msi"
-            Invoke-WebRequest -UseBasicParsing `
-              -Uri https://github.com/PowerShell/PowerShell/releases/latest/download/PowerShell-7.4.4-win-x64.msi `
-              -OutFile $msi
-            Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=0 ENABLE_PSREMOTING=0" -Wait -NoNewWindow
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            iex "& { $(irm https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
           }
           pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion'
 
+          
       # Tunnel Windows -> Linux VM docker.sock (add your VM host/user as secrets)
       - name: Open SSH tunnel to Linux VM docker
         id: tunnel
