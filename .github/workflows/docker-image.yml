@@ -31,11 +31,7 @@ jobs:
           }
           if (-not (Test-Path $pwshTarget)) { throw "pwsh not found after install at $pwshTarget" }
           "PWSH=$pwshTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Verify pwsh
-        shell: powershell
-        run: '& $env:PWSH -NoLogo -NoProfile -Command "$PSVersionTable.PSVersion"'
-
+          
       # Tunnel Windows -> Linux VM docker.sock (add your VM host/user as secrets)
       - name: Open SSH tunnel to Linux VM docker
         id: tunnel
