@@ -1,4 +1,4 @@
-name: Build on Remote Linux Docker from Windows Runner (TCP bridge)
+name: Build & Run on My Windows Server (Linux VM, PowerShell 7)
 
 on:
   push:
@@ -13,101 +13,59 @@ concurrency:
 
 jobs:
   build-and-run:
-    runs-on: [self-hosted, windows, X64]  # your Windows runner labels
-    env:
-      REMOTE_DOCKER: tcp://127.0.0.1:23750
+    # Use the exact labels you gave your runner during ./config.sh
+    runs-on: [self-hosted, linux, ws-server]
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 1) Ensure PowerShell 7 path var (OPTIONAL; keep using Windows PowerShell as the step shell)
-      - name: Ensure PowerShell 7 and export path
-        shell: powershell
+      # --- Install PowerShell 7 on Ubuntu (pwsh) ---
+      - name: Install PowerShell 7
         run: |
-          $pwshTarget = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-          if (-not (Test-Path $pwshTarget)) {
-            Write-Host "Installing PowerShell 7..."
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            iex "& { $(irm https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
-          }
-          if (-not (Test-Path $pwshTarget)) { throw "pwsh not found after install at $pwshTarget" }
-          "PWSH=$pwshTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          set -e
+          if ! command -v pwsh >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y wget apt-transport-https software-properties-common
+            . /etc/os-release
+            VER="${VERSION_ID:-22.04}"
+            wget -q "https://packages.microsoft.com/config/ubuntu/${VER}/packages-microsoft-prod.deb" -O packages-microsoft-prod.deb \
+              || wget -q "https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb" -O packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update
+            sudo apt-get install -y powershell
+          fi
 
-      # 2) On the Linux VM: install/start a TCP->UNIX bridge on 127.0.0.1:23750
-      - name: Start remote docker TCP bridge (socat)
-        shell: powershell
-        run: >
-          ssh "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
-          "set -e; command -v socat >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y socat);
-          pkill -f 'socat TCP-LISTEN:23750' || true;
-          nohup socat TCP-LISTEN:23750,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock >/dev/null 2>&1 & echo OK"
-          
-      # 3) Open local tunnel: Windows:23750 -> VM:127.0.0.1:23750 (TCP)
-      - name: Open SSH tunnel to Linux VM docker (TCP bridge)
-        id: tunnel
-        shell: powershell
-        run: |
-          $args = @(
-            "-o","ExitOnForwardFailure=yes",
-            "-N","-L","23750:127.0.0.1:23750",
-            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
-          )
-          $p = Start-Process -NoNewWindow -PassThru -FilePath ssh -ArgumentList $args
-          Set-Content -Path "$env:RUNNER_TEMP\ssh_tunnel_pid.txt" -Value $p.Id
-          Start-Sleep -Seconds 2
+      - name: Confirm PowerShell 7
+        shell: pwsh
+        run: '$PSVersionTable | Format-List *'
 
-      # 4) Quick ping of remote API through the tunnel (should print "OK")
-      - name: Sanity check Docker API tunnel
-        shell: powershell
-        run: |
-          try {
-            $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:23750/_ping"
-            Write-Host "Docker API /_ping -> $($resp.Content)"
-          } catch {
-            throw "Tunnel not up: $($_.Exception.Message)"
-          }
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # 5) Buildx using the tunneled daemon
-      - uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          endpoint: ${{ env.REMOTE_DOCKER }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 6) Login on the REMOTE daemon (pulls happen there)
-      - name: Login to Docker Hub on remote daemon
-        shell: powershell
+      - name: Build image
+        shell: pwsh
         run: |
-          "${{ secrets.DOCKERHUB_TOKEN }}" | docker -H $env:REMOTE_DOCKER login `
-            -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Build image (remote daemon)
-        shell: powershell
-        run: docker -H $env:REMOTE_DOCKER build --pull -t my-image-name:${{ github.sha }} .
+          docker build --pull -t my-image-name:${{ github.sha }} .
+          docker images | Select-String 'my-image-name'
 
       - name: Stop previous container (if any)
-        shell: powershell
-        continue-on-error: true
-        run: docker -H $env:REMOTE_DOCKER rm -f my-image
-
-      - name: Run container (remote)
-        shell: powershell
+        shell: pwsh
         run: |
-          docker -H $env:REMOTE_DOCKER run -d --name my-image `
+          if ((docker ps -a --format '{{.Names}}') -contains 'my-image') {
+            docker rm -f my-image
+          }
+
+      - name: Run container
+        shell: pwsh
+        run: |
+          docker run -d --name my-image `
             --restart unless-stopped `
             -p 8080:8080 `
             my-image-name:${{ github.sha }}
-
-      # 7) Clean up: close tunnel & stop remote socat
-      - name: Close SSH tunnel
-        if: always()
-        shell: powershell
-        run: |
-          $pidFile = "$env:RUNNER_TEMP\ssh_tunnel_pid.txt"
-          if (Test-Path $pidFile) {
-            $pid = Get-Content $pidFile
-            if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
-          }
-
-      - name: Stop remote docker TCP bridge
-        if: always()
-        shell: powershell
-        run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "pkill -f 'socat TCP-LISTEN:23750' || true"
