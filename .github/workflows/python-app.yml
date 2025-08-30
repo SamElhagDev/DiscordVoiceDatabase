@@ -72,11 +72,10 @@ jobs:
               $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
 
               $lines = @()
-              # Don't let native stderr kill the script; keep literal $ in the file
-              $lines += "$ErrorActionPreference = 'Continue'"
+              $lines += "`$ErrorActionPreference = 'Continue'"
               $lines += "Set-Location '$app'"
               $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
-              # Only load .env if TOKEN isn't already set from machine env/Secrets
+              # Fallback: only load .env if TOKEN not already present
               $lines += 'if (-not $env:TOKEN -and (Test-Path ".env")) {'
               $lines += '  Get-Content ".env" | ForEach-Object {'
               $lines += "    if (`$_ -match '^\s*#') { return }"
@@ -85,10 +84,40 @@ jobs:
               $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
               $lines += '  }'
               $lines += '}'
-              # Run the bot in the foreground (Task Scheduler keeps it alive); no redirection
+              # Optional: fail fast if TOKEN still missing (helps diagnostics)
+              $lines += 'if (-not $env:TOKEN) { throw "TOKEN env var not found; set machine env var TOKEN." }'
               $lines += "& '$venvPy' -u bot.py"
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
+              
+      # Put the secret into the machine environment
+      - name: Set TOKEN as machine env var
+        shell: powershell
+        env:
+          TOKEN: ${{ secrets.TOKEN }}   # your Discord bot token secret
+          run: |
+              if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
+              setx TOKEN "$env:TOKEN" /M | Out-Null
+              # verify it's in the machine scope now
+              $m = [Environment]::GetEnvironmentVariable('TOKEN','Machine')
+              if (-not $m) { throw "Failed to set machine env var TOKEN." }
+
+    # Stop any existing bot so it doesn't keep running with old env
+      - name: Stop existing bot (if running)
+        shell: powershell
+        run: |
+              $name = $env:APP_TASK
+              if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
+              try { (Get-ScheduledTask -TaskName $name -ErrorAction Stop) | Stop-ScheduledTask -ErrorAction SilentlyContinue } catch {}
+              } else {
+              schtasks /end /tn $name 2>$null | Out-Null
+              }
+              # kill stray python from our app dir just in case
+              $appDir = Join-Path $env:APP_ROOT 'src'
+              Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+              Where-Object { $_.CommandLine -match 'bot\.py' -and $_.CommandLine -match [regex]::Escape($appDir) } |
+              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
+
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
         run: |
