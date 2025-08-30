@@ -98,7 +98,7 @@ jobs:
       - name: Set PREFIX as machine env var
         shell: powershell
         env:
-          TOKEN: ${{ secrets.PREFIX }}   # your Discord bot token secret
+          PREFIX: ${{ secrets.PREFIX }}   # your Discord bot token secret
         run: |
               if (-not $env:PREFIX) { throw "Secret PREFIX is missing. Add it in Settings → Secrets → Actions." }
               setx PREFIX "$env:PREFIX" /M | Out-Null
@@ -109,7 +109,7 @@ jobs:
       - name: Set INVITE_LINK as machine env var
         shell: powershell
         env:
-          TOKEN: ${{ secrets.INVITE_LINK }}   # your Discord bot token secret
+          INVITE_LINK: ${{ secrets.INVITE_LINK }}   # your Discord bot token secret
         run: |
               if (-not $env:INVITE_LINK) { throw "Secret INVITE_LINK is missing. Add it in Settings → Secrets → Actions." }
               setx INVITE_LINK "$env:INVITE_LINK" /M | Out-Null
