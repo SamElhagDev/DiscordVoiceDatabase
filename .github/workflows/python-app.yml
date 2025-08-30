@@ -40,8 +40,8 @@ jobs:
         env:
           TOKEN: ${{ secrets.TOKEN }}           # <-- your Discord bot token
               # (optionally also) DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          shell: powershell
-          run: |
+        shell: powershell
+        run: |
               $work = "$env:GITHUB_WORKSPACE"
               $log  = "C:\ProgramData\mybot.log"
               New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
