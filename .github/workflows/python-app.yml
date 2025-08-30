@@ -94,7 +94,7 @@ jobs:
               $lines += '$ErrorActionPreference = $prevEA'
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
-
+              
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
         run: |
