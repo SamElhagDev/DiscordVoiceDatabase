@@ -65,16 +65,15 @@ jobs:
             & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
           }
           
-      - name: Create run-bot.ps1
+      - name: Create run-bot.ps1 (rotating logs)
         shell: powershell
         run: |
               $app    = "$env:APP_ROOT\src"
               $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
-              $log    = "C:\ProgramData\mybot.log"
-              New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
+              $logDir = "C:\ProgramData\mybot\logs"
+              New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
               $lines = @()
-              # keep literal $
               $lines += "`$ErrorActionPreference = 'Stop'"
               $lines += "Set-Location '$app'"
               $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
@@ -86,11 +85,15 @@ jobs:
               $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
               $lines += '  }'
               $lines += '}'
-
-              # temporarily relax error preference for native cmd, and append both stdout & stderr
-              $lines += '$prevEA = $ErrorActionPreference'
+              # per-run log path
+              $lines += '$ts  = (Get-Date).ToString("yyyyMMdd-HHmmss")'
+              $lines += '$log = Join-Path "C:\ProgramData\mybot\logs" ("mybot-" + $ts + ".log")'
+              # record latest path (optional)
+              $lines += 'Set-Content -Path "C:\ProgramData\mybot\latest.path" -Value $log -Encoding ASCII'
+              # run without failing on stderr, append both stdout+stderr
+              $lines += '`$prevEA = $ErrorActionPreference'
               $lines += '$ErrorActionPreference = "Continue"'
-              $lines += "& '$venvPy' -u bot.py 1>> '$log' 2>> '$log'"
+              $lines += "& '$venvPy' -u bot.py 1>> `$log 2>> `$log"
               $lines += '$ErrorActionPreference = $prevEA'
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
