@@ -62,11 +62,11 @@ jobs:
       # 3) (Optional) write .env so the task has TOKEN outside the job
       - name: Write .env for runtime
         if: ${{ secrets.TOKEN != '' }}
+        shell: powershell
         run: |
-          Set-Content -Path "$env:APP_ROOT\src\.env" -Value @"
-TOKEN=${{ secrets.TOKEN }}
-"@ -Encoding ascii
-
+          $envPath = Join-Path $env:APP_ROOT 'src\.env'
+          "TOKEN=${{ secrets.TOKEN }}" | Set-Content -Path $envPath -Encoding ASCII
+          
       # 4) Create a launcher that loads .env and starts the bot via venv
       - name: Create run-bot.ps1
         run: |
