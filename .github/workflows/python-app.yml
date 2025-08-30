@@ -19,6 +19,7 @@ jobs:
       APP_ROOT: C:\apps\mybot          # persistent install location
       APP_TASK: DiscordBot             # Scheduled Task name
       APP_PORT: 8080                   # if your app uses PORT
+      TOKEN: ${{ secrets.TOKEN }} 
 
     steps:
       - uses: actions/checkout@v4
