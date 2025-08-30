@@ -95,7 +95,7 @@ jobs:
         shell: powershell
         env:
           TOKEN: ${{ secrets.TOKEN }}   # your Discord bot token secret
-          run: |
+        run: |
               if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
               setx TOKEN "$env:TOKEN" /M | Out-Null
               # verify it's in the machine scope now
