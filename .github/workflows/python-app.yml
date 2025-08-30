@@ -88,7 +88,7 @@ jobs:
               $lines += '}'
 
               # temporarily relax error preference for native cmd, and append both stdout & stderr
-              $lines += '`$prevEA = $ErrorActionPreference'
+              $lines += '$prevEA = $ErrorActionPreference'
               $lines += '$ErrorActionPreference = "Continue"'
               $lines += "& '$venvPy' -u bot.py 1>> '$log' 2>> '$log'"
               $lines += '$ErrorActionPreference = $prevEA'
