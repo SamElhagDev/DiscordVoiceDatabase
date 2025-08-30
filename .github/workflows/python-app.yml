@@ -97,8 +97,6 @@ jobs:
               PREFIX: ${{ secrets.PREFIX }}   # optional - rename to your second secret name
               INVITE_LINK: ${{ secrets.INVITE_LINK }}   # optional - rename to your third secret name
         run: |
-              if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
-
               $pairs = 
               @
               (    
