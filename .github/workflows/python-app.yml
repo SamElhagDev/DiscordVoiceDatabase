@@ -59,14 +59,6 @@ jobs:
           if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
             & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
           }
-
-      # 3) (Optional) write .env so the task has TOKEN outside the job
-      - name: Write .env for runtime
-        if: ${{ secrets.TOKEN != '' }}
-        shell: powershell
-        run: |
-          $envPath = Join-Path $env:APP_ROOT 'src\.env'
-          "TOKEN=${{ secrets.TOKEN }}" | Set-Content -Path $envPath -Encoding ASCII
           
       # 4) Create a launcher that loads .env and starts the bot via venv
       - name: Create run-bot.ps1
