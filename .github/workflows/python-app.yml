@@ -36,9 +36,18 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Run bot.py
+      - name: Start bot in background and continue
         env:
-          TOKEN: ${{ secrets.TOKEN }}   # maps secret -> env var your code expects
-        run: |
-          if (-not $env:TOKEN) { throw "TOKEN env var is missing. Add repo secret 'TOKEN'." }
-          python -u bot.py
+          TOKEN: ${{ secrets.TOKEN }}           # <-- your Discord bot token
+              # (optionally also) DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          shell: powershell
+          run: |
+              $work = "$env:GITHUB_WORKSPACE"
+              $log  = "C:\ProgramData\mybot.log"
+              New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
+              $cmd  = "Set-Location `"$work`"; " +
+               # If you also use a .env locally, this block is harmless
+              "if (Test-Path .env) { Get-Content .env | % { if (`$_ -notmatch '^\s*#|\s*$') { `$k,`$v=`$_.Split('=',2); [Environment]::SetEnvironmentVariable(`$k.Trim(),`$v.Trim()) } } }; " +
+              "python -u bot.py *>> `"$log`""
+              Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-Command",$cmd
+
