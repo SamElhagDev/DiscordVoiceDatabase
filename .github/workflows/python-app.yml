@@ -38,7 +38,7 @@ jobs:
 
       - name: Run bot.py
         env:
-        TOKEN: ${{ secrets.TOKEN }}   # maps secret -> env var your code expects
+          TOKEN: ${{ secrets.TOKEN }}   # maps secret -> env var your code expects
         run: |
           if (-not $env:TOKEN) { throw "TOKEN env var is missing. Add repo secret 'TOKEN'." }
           python -u bot.py
