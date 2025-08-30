@@ -91,7 +91,7 @@ jobs:
               # record latest path (optional)
               $lines += 'Set-Content -Path "C:\ProgramData\mybot\latest.path" -Value $log -Encoding ASCII'
               # run without failing on stderr, append both stdout+stderr
-              $lines += '`$prevEA = $ErrorActionPreference'
+              $lines += '$prevEA = $ErrorActionPreference'
               $lines += '$ErrorActionPreference = "Continue"'
               $lines += "& '$venvPy' -u bot.py 1>> `$log 2>> `$log"
               $lines += '$ErrorActionPreference = $prevEA'
