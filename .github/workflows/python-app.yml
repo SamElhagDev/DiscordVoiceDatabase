@@ -65,8 +65,8 @@ jobs:
             & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
           }
           
-      # 4) Create a launcher that loads .env and starts the bot via venv
       - name: Create run-bot.ps1
+        shell: powershell
         run: |
           $app    = "$env:APP_ROOT\src"
           $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
@@ -74,6 +74,7 @@ jobs:
           New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
 
           $lines = @()
+          # keep literal $
           $lines += "`$ErrorActionPreference = 'Stop'"
           $lines += "Set-Location '$app'"
           $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
@@ -85,9 +86,15 @@ jobs:
           $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
           $lines += '  }'
           $lines += '}'
-          $lines += "& '$venvPy' -u bot.py *>> '$log'"
+
+          # temporarily relax error preference for native cmd, and append both stdout & stderr
+          $lines += '`$prevEA = $ErrorActionPreference'
+          $lines += '$ErrorActionPreference = "Continue"'
+          $lines += "& '$venvPy' -u bot.py 1>> '$log' 2>> '$log'"
+          $lines += '$ErrorActionPreference = $prevEA'
 
           Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
+
 
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
