@@ -85,21 +85,44 @@ jobs:
               $lines += '  }'
               $lines += '}'
               # Optional: fail fast if TOKEN still missing (helps diagnostics)
-              $lines += "'$venvPy' -u bot.py"
+              $lines += "&'$venvPy' -u bot.py"
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
               
-      # Put the secret into the machine environment
-      - name: Set TOKEN as machine env var
+      # Put secrets into the machine environment (seen by the Scheduled Task running as SYSTEM)
+      - name: Set machine env vars (TOKEN + 2 others)
         shell: powershell
         env:
-          TOKEN: ${{ secrets.TOKEN }}   # your Discord bot token secret
+              TOKEN:  ${{ secrets.TOKEN }}    # required
+              PREFIX: ${{ secrets.PREFIX }}   # optional - rename to your second secret name
+              INVITE_LINK: ${{ secrets.INVITE_LINK }}   # optional - rename to your third secret name
         run: |
               if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
-              setx TOKEN "$env:TOKEN" /M | Out-Null
-              # verify it's in the machine scope now
-              $m = [Environment]::GetEnvironmentVariable('TOKEN','Machine')
-              if (-not $m) { throw "Failed to set machine env var TOKEN." }
+
+              $pairs = 
+              @
+              (    
+                @{ Name='TOKEN';  Value=$env:TOKEN  },
+                @{ Name='PREFIX'; Value=$env:PREFIX },
+                @{ Name='INVITE_LINK'; Value=$env:INVITE_LINK }
+              )
+
+              foreach ($p in $pairs) 
+              {
+                if ($p.Value) {
+                $proc = Start-Process -FilePath setx.exe -ArgumentList @($p.Name, $p.Value, '/M') -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -ne 0) { throw "setx /M failed for $($p.Name) (exit $($proc.ExitCode)). Is the runner admin?" }
+
+                # Verify from HKLM machine environment (do not echo values)
+                $m = [Environment]::GetEnvironmentVariable($p.Name,'Machine')
+                if (-not $m) { throw "Failed to verify machine env var $($p.Name)." }
+                Write-Host "Set $($p.Name) (length: $($m.Length))"
+                } 
+                else {
+                Write-Host "Skipping $($p.Name) (empty secret)."
+                }
+              }
+
 
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)
