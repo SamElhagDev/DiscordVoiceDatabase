@@ -85,8 +85,7 @@ jobs:
               $lines += '  }'
               $lines += '}'
               # Optional: fail fast if TOKEN still missing (helps diagnostics)
-              $lines += 'if (-not $env:TOKEN) { throw "TOKEN env var not found; set machine env var TOKEN." }'
-              $lines += "& '$venvPy' -u bot.py"
+              $lines += "'$venvPy' -u bot.py"
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
               
