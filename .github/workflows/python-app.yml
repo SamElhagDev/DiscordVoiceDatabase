@@ -74,7 +74,7 @@ jobs:
           New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
 
           $lines = @()
-          $lines += "$ErrorActionPreference = 'Stop'"
+          $lines += "`$ErrorActionPreference = 'Stop'"
           $lines += "Set-Location '$app'"
           $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
           $lines += 'if (Test-Path ".env") {'
