@@ -35,12 +35,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install flake8 pytest
           if (Test-Path 'requirements.txt') { python -m pip install -r requirements.txt }
-
       - name: Lint with flake8
         run: |
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
       # 1) Copy code to a persistent folder
       - name: Deploy files to persistent folder
         shell: powershell
@@ -48,9 +46,7 @@ jobs:
               New-Item -ItemType Directory -Path $env:APP_ROOT -Force | Out-Null
               $dst = Join-Path $env:APP_ROOT 'src'
               New-Item -ItemType Directory -Path $dst -Force | Out-Null
-
               robocopy "$env:GITHUB_WORKSPACE" "$dst" /MIR /NFL /NDL /NP /NJH /NJS /XD ".git" ".github" ".venv" "__pycache__" ".pytest_cache" ".mypy_cache" ".vs" ".vscode" "Publish" /XF "Dockerfile" "docker-compose.yml"
-
               $code = $LASTEXITCODE
               if ($code -ge 8) { Write-Error "robocopy failed with exit code $code"; exit $code }
               Write-Host "robocopy exit code $code (OK)"; exit 0
@@ -70,7 +66,6 @@ jobs:
         run: |
               $app    = "$env:APP_ROOT\src"
               $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
-
               $lines = @()
               $lines += "`$ErrorActionPreference = 'Continue'"
               $lines += "Set-Location '$app'"
@@ -85,43 +80,43 @@ jobs:
               $lines += '  }'
               $lines += '}'
               # Optional: fail fast if TOKEN still missing (helps diagnostics)
-              $lines += "&'$venvPy' -u bot.py"
-
+              $lines += "'$venvPy' -u bot.py"
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
               
-      # Put secrets into the machine environment (seen by the Scheduled Task running as SYSTEM)
-      - name: Set machine env vars (TOKEN + 2 others)
+      # Put the secret into the machine environment
+      - name: Set TOKEN as machine env var
         shell: powershell
         env:
-              TOKEN:  ${{ secrets.TOKEN }}    # required
-              PREFIX: ${{ secrets.PREFIX }}   # optional - rename to your second secret name
-              INVITE_LINK: ${{ secrets.INVITE_LINK }}   # optional - rename to your third secret name
+          TOKEN: ${{ secrets.TOKEN }}   # your Discord bot token secret
         run: |
-              $pairs = 
-              @
-              (    
-                @{ Name='TOKEN';  Value=$env:TOKEN  },
-                @{ Name='PREFIX'; Value=$env:PREFIX },
-                @{ Name='INVITE_LINK'; Value=$env:INVITE_LINK }
-              )
+              if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
+              setx TOKEN "$env:TOKEN" /M | Out-Null
+              # verify it's in the machine scope now
+              $m = [Environment]::GetEnvironmentVariable('TOKEN','Machine')
+              if (-not $m) { throw "Failed to set machine env var TOKEN." }
 
-              foreach ($p in $pairs) 
-              {
-                if ($p.Value) {
-                $proc = Start-Process -FilePath setx.exe -ArgumentList @($p.Name, $p.Value, '/M') -Wait -NoNewWindow -PassThru
-                if ($proc.ExitCode -ne 0) { throw "setx /M failed for $($p.Name) (exit $($proc.ExitCode)). Is the runner admin?" }
+      - name: Set PREFIX as machine env var
+        shell: powershell
+        env:
+          TOKEN: ${{ secrets.PREFIX }}   # your Discord bot token secret
+        run: |
+              if (-not $env:PREFIX) { throw "Secret PREFIX is missing. Add it in Settings → Secrets → Actions." }
+              setx PREFIX "$env:PREFIX" /M | Out-Null
+              # verify it's in the machine scope now
+              $m = [Environment]::GetEnvironmentVariable('PREFIX','Machine')
+              if (-not $m) { throw "Failed to set machine env var PREFIX." }
 
-                # Verify from HKLM machine environment (do not echo values)
-                $m = [Environment]::GetEnvironmentVariable($p.Name,'Machine')
-                if (-not $m) { throw "Failed to verify machine env var $($p.Name)." }
-                Write-Host "Set $($p.Name) (length: $($m.Length))"
-                } 
-                else {
-                Write-Host "Skipping $($p.Name) (empty secret)."
-                }
-              }
-
-
+      - name: Set INVITE_LINK as machine env var
+        shell: powershell
+        env:
+          TOKEN: ${{ secrets.INVITE_LINK }}   # your Discord bot token secret
+        run: |
+              if (-not $env:INVITE_LINK) { throw "Secret INVITE_LINK is missing. Add it in Settings → Secrets → Actions." }
+              setx INVITE_LINK "$env:INVITE_LINK" /M | Out-Null
+              # verify it's in the machine scope now
+              $m = [Environment]::GetEnvironmentVariable('INVITE_LINK','Machine')
+              if (-not $m) { throw "Failed to set machine env var INVITE_LINK." }
+              
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)
         shell: powershell
@@ -137,7 +132,6 @@ jobs:
               Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
               Where-Object { $_.CommandLine -match 'bot\.py' -and $_.CommandLine -match [regex]::Escape($appDir) } |
               ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
-
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
         run: |
@@ -148,16 +142,13 @@ jobs:
           $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
           $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                                                     -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
-
           if (Get-ScheduledTask -TaskName $env:APP_TASK -ErrorAction SilentlyContinue) {
             schtasks /end /tn $env:APP_TASK 2>$null | Out-Null
             Unregister-ScheduledTask -TaskName $env:APP_TASK -Confirm:$false
           }
           Register-ScheduledTask -TaskName $env:APP_TASK -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
-
           # Fire it and return immediately (non-blocking)
           schtasks /run /tn $env:APP_TASK | Out-Null
-
       # 6) (Optional) show status; logs are at C:\ProgramData\mybot.log
       - name: Task status
         run: schtasks /query /tn $env:APP_TASK /v /fo LIST
