@@ -65,19 +65,19 @@ jobs:
             & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
           }
           
-      - name: Create run-bot.ps1 (rotating logs)
+      - name: Create run-bot.ps1 (no logging)
         shell: powershell
         run: |
               $app    = "$env:APP_ROOT\src"
               $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
-              $logDir = "C:\ProgramData\mybot\logs"
-              New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
               $lines = @()
-              $lines += "$ErrorActionPreference = 'Stop'"
+              # Don't let native stderr kill the script; keep literal $ in the file
+              $lines += "$ErrorActionPreference = 'Continue'"
               $lines += "Set-Location '$app'"
               $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
-              $lines += 'if (Test-Path ".env") {'
+              # Only load .env if TOKEN isn't already set from machine env/Secrets
+              $lines += 'if (-not $env:TOKEN -and (Test-Path ".env")) {'
               $lines += '  Get-Content ".env" | ForEach-Object {'
               $lines += "    if (`$_ -match '^\s*#') { return }"
               $lines += "    if (`$_ -match '^\s*$') { return }"
@@ -85,19 +85,10 @@ jobs:
               $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
               $lines += '  }'
               $lines += '}'
-              # per-run log path
-              $lines += '$ts  = (Get-Date).ToString("yyyyMMdd-HHmmss")'
-              $lines += '$log = Join-Path "C:\ProgramData\mybot\logs" ("mybot-" + $ts + ".log")'
-              # record latest path (optional)
-              $lines += 'Set-Content -Path "C:\ProgramData\mybot\latest.path" -Value $log -Encoding ASCII'
-              # run without failing on stderr, append both stdout+stderr
-              $lines += '$prevEA = $ErrorActionPreference'
-              $lines += '$ErrorActionPreference = "Continue"'
-              $lines += "& '$venvPy' -u bot.py 1>> `$log 2>> `$log"
-              $lines += '$ErrorActionPreference = $prevEA'
+              # Run the bot in the foreground (Task Scheduler keeps it alive); no redirection
+              $lines += "& '$venvPy' -u bot.py"
 
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
-              
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
         run: |
