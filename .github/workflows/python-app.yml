@@ -80,7 +80,7 @@ jobs:
               $lines += '  }'
               $lines += '}'
               # Optional: fail fast if TOKEN still missing (helps diagnostics)
-              $lines += "'$venvPy' -u bot.py"
+              $lines += "$venvPy -u bot.py"
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
               
       # Put the secret into the machine environment
