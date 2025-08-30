@@ -11,10 +11,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: [self-hosted, windows, x64]  # <- adjust labels if yours differ
+    runs-on: [self-hosted, windows, x64]   # <- adjust labels if yours differ
     defaults:
       run:
         shell: powershell
+    env:
+      APP_ROOT: C:\apps\mybot          # persistent install location
+      APP_TASK: DiscordBot             # Scheduled Task name
+      APP_PORT: 8080                   # if your app uses PORT
 
     steps:
       - uses: actions/checkout@v4
@@ -36,18 +40,77 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Start bot in background and continue
-        env:
-          TOKEN: ${{ secrets.TOKEN }}           # <-- your Discord bot token
-              # (optionally also) DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        shell: powershell
+      # 1) Copy code to a persistent folder
+      - name: Deploy files to persistent folder
         run: |
-              $work = "$env:GITHUB_WORKSPACE"
-              $log  = "C:\ProgramData\mybot.log"
-              New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
-              $cmd  = "Set-Location `"$work`"; " +
-               # If you also use a .env locally, this block is harmless
-              "if (Test-Path .env) { Get-Content .env | % { if (`$_ -notmatch '^\s*#|\s*$') { `$k,`$v=`$_.Split('=',2); [Environment]::SetEnvironmentVariable(`$k.Trim(),`$v.Trim()) } } }; " +
-              "python -u bot.py *>> `"$log`""
-              Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-Command",$cmd
+          New-Item -ItemType Directory -Path $env:APP_ROOT -Force | Out-Null
+          $dst = Join-Path $env:APP_ROOT 'src'
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          robocopy "$env:GITHUB_WORKSPACE" $dst /MIR /NFL /NDL /NP /NJH /NJS /XD .git .github .venv __pycache__ .pytest_cache .mypy_cache .vs .vscode Publish /XF Dockerfile docker-compose.yml
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
 
+      # 2) Create a dedicated venv for runtime and install deps
+      - name: Create/Update venv and install requirements
+        run: |
+          $venv = Join-Path $env:APP_ROOT '.venv'
+          if (-not (Test-Path $venv)) { python -m venv $venv }
+          & "$venv\Scripts\python.exe" -m pip install --upgrade pip wheel
+          if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
+            & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
+          }
+
+      # 3) (Optional) write .env so the task has TOKEN outside the job
+      - name: Write .env for runtime
+        if: ${{ secrets.TOKEN != '' }}
+        run: |
+          Set-Content -Path "$env:APP_ROOT\src\.env" -Value @"
+TOKEN=${{ secrets.TOKEN }}
+"@ -Encoding ascii
+
+      # 4) Create a launcher that loads .env and starts the bot via venv
+      - name: Create run-bot.ps1
+        run: |
+          $app    = "$env:APP_ROOT\src"
+          $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
+          $log    = "C:\ProgramData\mybot.log"
+          New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
+
+          $lines = @()
+          $lines += "$ErrorActionPreference = 'Stop'"
+          $lines += "Set-Location '$app'"
+          $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
+          $lines += 'if (Test-Path ".env") {'
+          $lines += '  Get-Content ".env" | ForEach-Object {'
+          $lines += "    if (`$_ -match '^\s*#') { return }"
+          $lines += "    if (`$_ -match '^\s*$') { return }"
+          $lines += "    `$k,`$v = `$_ -split '=', 2"
+          $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
+          $lines += '  }'
+          $lines += '}'
+          $lines += "& '$venvPy' -u bot.py *>> '$log'"
+
+          Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
+
+      # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
+      - name: Register/Start Scheduled Task
+        run: |
+          $exe  = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $args = "-NoProfile -ExecutionPolicy Bypass -File `"$env:APP_ROOT\run-bot.ps1`""
+          $action    = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $env:APP_ROOT
+          $trigger   = New-ScheduledTaskTrigger -AtStartup
+          $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                                                    -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
+
+          if (Get-ScheduledTask -TaskName $env:APP_TASK -ErrorAction SilentlyContinue) {
+            schtasks /end /tn $env:APP_TASK 2>$null | Out-Null
+            Unregister-ScheduledTask -TaskName $env:APP_TASK -Confirm:$false
+          }
+          Register-ScheduledTask -TaskName $env:APP_TASK -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
+
+          # Fire it and return immediately (non-blocking)
+          schtasks /run /tn $env:APP_TASK | Out-Null
+
+      # 6) (Optional) show status; logs are at C:\ProgramData\mybot.log
+      - name: Task status
+        run: schtasks /query /tn $env:APP_TASK /v /fo LIST
