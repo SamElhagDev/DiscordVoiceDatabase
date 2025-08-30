@@ -1,4 +1,4 @@
-name: Python application (self-hosted Windows)
+name: Discord Voice Database
 
 on:
   push:
@@ -16,8 +16,8 @@ jobs:
       run:
         shell: powershell
     env:
-      APP_ROOT: C:\apps\mybot          # persistent install location
-      APP_TASK: DiscordBot             # Scheduled Task name
+      APP_ROOT: C:\apps\DiscordVoiceDatabase          # persistent install location
+      APP_TASK: DiscordVoiceDatabase             # Scheduled Task name
       APP_PORT: 8080                   # if your app uses PORT
       TOKEN: ${{ secrets.TOKEN }} 
 
