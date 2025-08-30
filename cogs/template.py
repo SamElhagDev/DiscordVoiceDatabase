@@ -1,14 +1,5 @@
-"""
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
-Description:
-🐍 A simple template to start to code your own and personalized Discord bot in Python
-
-Version: 6.3.0
-"""
-
 from discord.ext import commands
 from discord.ext.commands import Context
-
 
 # Here we name the cog and create a new class for the cog.
 class Template(commands.Cog, name="template"):

@@ -1,11 +1,3 @@
-"""
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
-Description:
-🐍 A simple template to start to code your own and personalized Discord bot in Python
-
-Version: 6.3.0
-"""
-
 import json
 import logging
 import os
@@ -23,12 +15,6 @@ from database import DatabaseManager
 
 load_dotenv()
 
-"""	
-Setup bot intents (events restrictions)
-For more information about intents, please go to the following websites:
-https://discordpy.readthedocs.io/en/latest/intents.html
-https://discordpy.readthedocs.io/en/latest/intents.html#privileged-intents
-"""
 
 intents =discord.Intents.default()
 intents.bans = True
@@ -135,9 +121,13 @@ class DiscordBot(commands.Bot):
         self.bot_prefix = os.getenv("PREFIX")
         self.invite_link = os.getenv("INVITE_LINK")
 
+    """
+     D:\DiscordVoiceDatabase\Database - Local for Test 
+     Y:\DiscordVoiceDatabase\Database - For Deployment
+    """
     async def init_db(self) -> None:
-        async with aiosqlite.connect(
-            f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
+        async with aiosqlite.connect(        
+            f"Y:\DiscordVoiceDatabase\Database\database.db"
         ) as db:
             with open(
                 f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql",
