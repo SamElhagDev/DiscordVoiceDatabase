@@ -38,4 +38,4 @@ jobs:
 
       - name: Run
         run: |
-          bot.py
+          python bot.py
