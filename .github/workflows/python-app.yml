@@ -42,6 +42,3 @@ jobs:
         run: |
           if (-not $env:TOKEN) { throw "TOKEN env var is missing. Add repo secret 'TOKEN'." }
           python -u bot.py
-
-        run: |
-          python bot.py
