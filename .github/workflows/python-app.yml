@@ -43,13 +43,18 @@ jobs:
 
       # 1) Copy code to a persistent folder
       - name: Deploy files to persistent folder
+        shell: powershell
         run: |
           New-Item -ItemType Directory -Path $env:APP_ROOT -Force | Out-Null
           $dst = Join-Path $env:APP_ROOT 'src'
           New-Item -ItemType Directory -Path $dst -Force | Out-Null
-          robocopy "$env:GITHUB_WORKSPACE" $dst /MIR /NFL /NDL /NP /NJH /NJS /XD .git .github .venv __pycache__ .pytest_cache .mypy_cache .vs .vscode Publish /XF Dockerfile docker-compose.yml
-          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
 
+          cmd /c robocopy "$env:GITHUB_WORKSPACE" $dst /MIR /NFL /NDL /NP /NJH /NJS ^
+          /XD .git .github .venv __pycache__ .pytest_cache .mypy_cache .vs .vscode Publish ^
+          /XF Dockerfile docker-compose.yml
+
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE } else { exit 0 }
+          
       # 2) Create a dedicated venv for runtime and install deps
       - name: Create/Update venv and install requirements
         run: |
