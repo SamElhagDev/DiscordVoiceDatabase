@@ -236,7 +236,7 @@ class DiscordBot(commands.Bot):
         self.status_task.start()
         self.database = DatabaseManager(
             connection=await aiosqlite.connect(
-                f"Y:\DiscordVoiceDatabase\Database\database.db"
+                f"D:\DiscordVoiceDatabase\Database\database.db"
             )
         )
         
