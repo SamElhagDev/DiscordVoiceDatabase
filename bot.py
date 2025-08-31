@@ -127,7 +127,7 @@ class DiscordBot(commands.Bot):
     """
     async def init_db(self) -> None:
         async with aiosqlite.connect(        
-            f"Y:\DiscordVoiceDatabase\Database\database.db"
+            f"D:\DiscordVoiceDatabase\Database\database.db"
         ) as db:
             with open(
                 f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql",
