@@ -151,6 +151,55 @@ class DiscordBot(commands.Bot):
                     self.logger.error(
                         f"Failed to load extension {extension}\n{exception}"
                     )
+                    
+    async def joinPrimaryChannel(self):
+        now = int(time.time())
+        for guild in self.bot.guilds:
+            s = self.get_settings(guild.id)
+            if not s.enabled:
+                continue
+
+
+            # If already recording somewhere in this guild, check for stop condition
+            active_chan_id = self._sessions.get(guild.id)
+            if active_chan_id:
+                vc = guild.voice_client
+                # if bot disconnected or channel changed, clear session
+                if not vc or not vc.channel or vc.channel.id != active_chan_id:
+                    self._sessions.pop(guild.id, None)
+                    continue
+                # stop if empty (with grace)
+                allowed_present = self._allowed_users_in_channel(vc.channel)
+                key = (guild.id, vc.channel.id)
+                if allowed_present:
+                    self._last_seen_nonempty[key] = now
+                elif now - self._last_seen_nonempty.get(key, now) >= GRACE_EMPTY_SEC:
+                    try:
+                        vc.stop_recording()
+                        await vc.disconnect(force=True)
+                    except Exception:
+                        pass
+                    self._sessions.pop(guild.id, None)
+                continue
+
+
+                # Not recording: look for an eligible channel to start
+                for ch in guild.voice_channels:
+                    if not isinstance(ch, discord.VoiceChannel):
+                        continue
+                    if not self._eligible_channel(guild, ch, s):
+                        continue
+                    allowed_present = self._allowed_users_in_channel(ch)
+                    if len(allowed_present) >= s.min_users:
+                        # join & start
+                        try:
+                            vc = await ch.connect()
+                        except discord.ClientException:
+                            continue
+                        await self._start_record_cb(vc) # starts segmented per-user recording
+                        self._sessions[guild.id] = ch.id
+                        self._last_seen_nonempty[(guild.id, ch.id)] = now
+                        break
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
@@ -167,6 +216,10 @@ class DiscordBot(commands.Bot):
         """
         await self.wait_until_ready()
 
+    """
+     D:\DiscordVoiceDatabase\Database - Local for Test 
+     Y:\DiscordVoiceDatabase\Database - For Deployment
+    """
     async def setup_hook(self) -> None:
         """
         This will just be executed when the bot starts the first time.
@@ -183,9 +236,13 @@ class DiscordBot(commands.Bot):
         self.status_task.start()
         self.database = DatabaseManager(
             connection=await aiosqlite.connect(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
+                f"Y:\DiscordVoiceDatabase\Database\database.db"
             )
         )
+        
+        """        
+        await self.joinPrimaryChannel();
+        """
 
     async def on_message(self, message: discord.Message) -> None:
         """
