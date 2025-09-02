@@ -122,8 +122,8 @@ class DiscordBot(commands.Bot):
         self.invite_link = os.getenv("INVITE_LINK")
 
     """
-     D:\DiscordVoiceDatabase\Database - Local for Test 
-     Y:\DiscordVoiceDatabase\Database - For Deployment
+     D:\DiscordVoiceDatabase\Database -  For Deployment
+     Y:\DiscordVoiceDatabase\Database -  Local for Test 
     """
     async def init_db(self) -> None:
         async with aiosqlite.connect(        
@@ -216,9 +216,9 @@ class DiscordBot(commands.Bot):
         """
         await self.wait_until_ready()
 
-    """
-     D:\DiscordVoiceDatabase\Database - Local for Test 
-     Y:\DiscordVoiceDatabase\Database - For Deployment
+    """ 
+     D:\DiscordVoiceDatabase\Database -  For Deployment
+     Y:\DiscordVoiceDatabase\Database -  Local for Test 
     """
     async def setup_hook(self) -> None:
         """

@@ -2,3 +2,5 @@ aiohttp
 aiosqlite
 discord.py==2.5.2
 python-dotenv
+PyNaCl
+opuslib

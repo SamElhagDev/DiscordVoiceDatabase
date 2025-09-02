@@ -12,10 +12,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     # Here you can just add your own commands, you'll always need to provide "self" as first parameter.
 
     @commands.hybrid_command(
-        name="testcommand",
+        name="testcommand1",
         description="This is a testing command that does nothing.",
     )
-    async def testcommand(self, context: Context) -> None:
+    async def testcommand1(self, context: Context) -> None:
         """
         This is a testing command that does nothing.
 
@@ -31,7 +31,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         name="registeruser",
         description="This command opts in a user to the voice database.",
     )
-    async def testcommand(self, context: Context) -> None:
+    async def testcommand2(self, context: Context) -> None:
         """
         This is a testing command that does nothing.
 
@@ -47,7 +47,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         name="unregisteruser",
         description="This command opts out a user from the voice database.",
     )
-    async def testcommand(self, context: Context) -> None:
+    async def testcommand3(self, context: Context) -> None:
         """
         This is a testing command that does nothing.
 
@@ -72,13 +72,31 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         # Don't forget to remove "pass", I added this just because there's no content in the method.
         pass
+    
+    @commands.hybrid_command(
+        name="joinprimarychannel",
+        description="This command forces the bot to join the primary channel.",
+    )
+    async def joinprimarychannel(self, context: Context) -> None:
+        """
+        This is a testing command that does nothing.
 
+        :param context: The application command context.
+        """
+        channel = discord.utils.get(context.guild.voice_channels,name="The Frunchard")
+    
+        if channel:
+            await channel.connect();
+            await context.send(f"Joined {channel.name}!")
+        else:
+            await context.send("You are not connected to a voice channel!")
 
-# And then we finally add the cog to the bot so that it can load, unload, reload and use it's content.
+        # Don't forget to remove "pass", I added this just because there's no content in the method.
+        
 async def setup(bot) -> None:
     await bot.add_cog(VoiceDatabase(bot))
 
-class RollingOpusSegmentSink(discord):
+class RollingOpusSegmentSink:
     def __init__(self, segment_sec: int = 10):
         super().__init__(filters=None)  # record everyone
         self.segment_sec = segment_sec
@@ -132,4 +150,7 @@ class RollingOpusSegmentSink(discord):
             f.write(u["buf"].read())
 
         # enqueue remux job (producer/consumer) to turn .opusbin -> .ogg
-        # leave it simple for now: a helper can poll folder and remux asap.
+        # leave it simple for now: a helper can poll folder and remux asap
+        
+        # And then we finally add the cog to the bot so that it can load, unload, reload and use it's content.
+    
