@@ -41,12 +41,3 @@ docker compose up -d --build
 ```
 
 > **Note**: `-d` will make the container run in detached mode, so in the background.
-
-## Issues or Questions
-
-If you have any issues or questions of how to code a specific command, you can:
-
-- Join my Discord server [here](https://discord.gg/xj6y5ZaTMr)
-- Post them [here](https://github.com/kkrypt0nn/Python-Discord-Bot-Template/issues)
-
-Me or other people will take their time to answer and help you.
