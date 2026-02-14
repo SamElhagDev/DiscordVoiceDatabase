@@ -10,6 +10,8 @@
   <a href="https://github.com/psf/black"><img src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
 </p>
 
+## Discord Voice Channel Recording with Lookup (Work in Progress)
+
 ## How to start
 
 ### The _"usual"_ way
