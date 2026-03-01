@@ -65,7 +65,7 @@ jobs:
             $healthy = $false
             try { $healthy = (& $venvPy --version 2>&1) -match 'Python 3' } catch {}
             if (-not $healthy) {
-              Write-Host "Venv Python is stale or broken – recreating..."
+              Write-Host "Venv Python is stale or broken - recreating..."
               Remove-Item -Recurse -Force $venv
             }
           }
