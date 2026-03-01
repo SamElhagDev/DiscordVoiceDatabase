@@ -17,7 +17,7 @@ jobs:
       APP_ROOT: C:\apps\DiscordVoiceDatabase          # persistent install location
       APP_TASK: DiscordVoiceDatabase             # Scheduled Task name
       APP_PORT: 8080                   # if your app uses PORT
-      TOKEN: ${{ secrets.TOKEN }} 
+      TOKEN: ${{ secrets.TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -33,10 +33,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install flake8 pytest
           if (Test-Path 'requirements.txt') { python -m pip install -r requirements.txt }
+
       - name: Lint with flake8
         run: |
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
       # 1) Copy code to a persistent folder
       - name: Deploy files to persistent folder
         shell: powershell
@@ -48,17 +50,32 @@ jobs:
               $code = $LASTEXITCODE
               if ($code -ge 8) { Write-Error "robocopy failed with exit code $code"; exit $code }
               Write-Host "robocopy exit code $code (OK)"; exit 0
-              
+
       # 2) Create a dedicated venv for runtime and install deps
       - name: Create/Update venv and install requirements
         run: |
           $venv = Join-Path $env:APP_ROOT '.venv'
-          if (-not (Test-Path $venv)) { python -m venv $venv }
-          & "$venv\Scripts\python.exe" -m pip install --upgrade pip wheel
-          if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
-            & "$venv\Scripts\python.exe" -m pip install -r "$env:APP_ROOT\src\requirements.txt"
+          $venvPy = "$venv\Scripts\python.exe"
+
+          # If the venv exists, check its Python is still healthy.
+          # A stale venv (e.g. created by a since-removed actions/setup-python
+          # tool-cache Python) will have a broken base-python path baked into
+          # pyvenv.cfg and will throw "No Python at ..." on every call.
+          if (Test-Path $venv) {
+            $healthy = $false
+            try { $healthy = (& $venvPy --version 2>&1) -match 'Python 3' } catch {}
+            if (-not $healthy) {
+              Write-Host "Venv Python is stale or broken – recreating..."
+              Remove-Item -Recurse -Force $venv
+            }
           }
-          
+
+          if (-not (Test-Path $venv)) { python -m venv $venv }
+          & $venvPy -m pip install --upgrade pip wheel
+          if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
+            & $venvPy -m pip install -r "$env:APP_ROOT\src\requirements.txt"
+          }
+
       - name: Create run-bot.ps1 (no logging)
         shell: powershell
         run: |
@@ -80,7 +97,7 @@ jobs:
               # Optional: fail fast if TOKEN still missing (helps diagnostics)
               $lines += "$venvPy -u bot.py"
               Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
-              
+
       # Put the secret into the machine environment
       - name: Set TOKEN as machine env var
         shell: powershell
@@ -114,7 +131,7 @@ jobs:
               # verify it's in the machine scope now
               $m = [Environment]::GetEnvironmentVariable('INVITE_LINK','Machine')
               if (-not $m) { throw "Failed to set machine env var INVITE_LINK." }
-              
+
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)
         shell: powershell
@@ -130,6 +147,7 @@ jobs:
               Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
               Where-Object { $_.CommandLine -match 'bot\.py' -and $_.CommandLine -match [regex]::Escape($appDir) } |
               ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
+
       # 5) Register a Scheduled Task (runs at startup, survives job end), then start it now
       - name: Register/Start Scheduled Task
         run: |
@@ -147,6 +165,7 @@ jobs:
           Register-ScheduledTask -TaskName $env:APP_TASK -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
           # Fire it and return immediately (non-blocking)
           schtasks /run /tn $env:APP_TASK | Out-Null
+
       # 6) (Optional) show status; logs are at C:\ProgramData\mybot.log
       - name: Task status
         run: schtasks /query /tn $env:APP_TASK /v /fo LIST
