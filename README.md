@@ -10,6 +10,8 @@
   <a href="https://github.com/psf/black"><img src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
 </p>
 
+## Discord Voice Channel Recording with Lookup (Work in Progress)
+
 ## How to start
 
 ### The _"usual"_ way
@@ -41,12 +43,3 @@ docker compose up -d --build
 ```
 
 > **Note**: `-d` will make the container run in detached mode, so in the background.
-
-## Issues or Questions
-
-If you have any issues or questions of how to code a specific command, you can:
-
-- Join my Discord server [here](https://discord.gg/xj6y5ZaTMr)
-- Post them [here](https://github.com/kkrypt0nn/Python-Discord-Bot-Template/issues)
-
-Me or other people will take their time to answer and help you.
