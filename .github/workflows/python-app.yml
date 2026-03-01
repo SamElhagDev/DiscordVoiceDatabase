@@ -3,8 +3,6 @@ name: Discord Voice Database
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
 
 permissions:
   contents: read
