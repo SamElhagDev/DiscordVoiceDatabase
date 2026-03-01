@@ -70,7 +70,7 @@ jobs:
             }
           }
 
-          if (-not (Test-Path $venv)) { python -m venv $venv }
+          if (-not (Test-Path $venv)) { py -3.10 -m venv $venv }
           & $venvPy -m pip install --upgrade pip wheel
           if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
             & $venvPy -m pip install -r "$env:APP_ROOT\src\requirements.txt"
