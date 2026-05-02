@@ -155,11 +155,11 @@ class DiscordBot(commands.Bot):
         self.logger.info(f"Clips: {CLIPS_PATH}")
         self.logger.info("-------------------")
         await self.init_db()
-        await self.load_cogs()
-        self.status_task.start()
         self.database = DatabaseManager(
             connection=await aiosqlite.connect(DB_PATH)
         )
+        await self.load_cogs()
+        self.status_task.start()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user or message.author.bot:
