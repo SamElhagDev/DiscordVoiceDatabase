@@ -1,5 +1,7 @@
 aiohttp
 aiosqlite
-discord.py[voice]==2.5.2
+discord.py[voice]
+discord-ext-voice-recv
+davey
 python-dotenv
 PyNaCl

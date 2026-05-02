@@ -3,13 +3,14 @@ Voice Database cog — commands for user registration, recording control,
 and clip retrieval.
 """
 
+import asyncio
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands, tasks, voice_recv
 from discord.ext.commands import Context
 
 from recording.recorder import VoiceRecorder
@@ -47,6 +48,25 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             recorder = self.recorders.pop(guild_id, None)
             if recorder:
                 await recorder.stop()
+
+    async def _connect_voice(self, channel: discord.VoiceChannel) -> discord.VoiceClient | None:
+        """Connect to a voice channel, clearing any stale session first.
+        Returns the VoiceClient or None on failure."""
+        guild = channel.guild
+        if guild.voice_client:
+            await guild.voice_client.disconnect(force=True)
+            await asyncio.sleep(1)  # let Discord invalidate the stale session
+
+        for attempt in range(2):
+            try:
+                return await channel.connect(cls=voice_recv.VoiceRecvClient)
+            except (discord.ClientException, discord.errors.ConnectionClosed) as e:
+                if attempt == 0:
+                    logger.warning(f"Voice connect failed (attempt 1): {e} — retrying after delay")
+                    await asyncio.sleep(2)
+                else:
+                    logger.error(f"Voice connect failed (attempt 2): {e}")
+                    return None
 
     # ── Participation commands ──────────────────────────────────────────
 
@@ -181,12 +201,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        try:
-            vc = await channel.connect()
-        except discord.ClientException:
+        vc = await self._connect_voice(channel)
+        if vc is None:
             await context.send(
                 embed=discord.Embed(
-                    description="Failed to connect to the voice channel.",
+                    description="Failed to connect to the voice channel. Try again in a moment.",
                     color=0xED4245,
                 )
             )
@@ -281,7 +300,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         # Parse the start timestamp
         try:
-            start_time = datetime.fromisoformat(start)
+            start_time = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -471,7 +490,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 continue
 
             try:
-                vc = await channel.connect()
+                vc = await self._connect_voice(channel)
+                if vc is None:
+                    continue
                 recorder = VoiceRecorder(
                     bot=self.bot,
                     guild=guild,

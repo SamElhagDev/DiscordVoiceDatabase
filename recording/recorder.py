@@ -16,6 +16,13 @@ import time
 from pathlib import Path
 
 import discord
+import discord.opus as opus_mod
+from discord.ext import voice_recv
+
+try:
+    import davey as _davey
+except ImportError:
+    _davey = None
 
 logger = logging.getLogger("discord_bot")
 
@@ -65,6 +72,62 @@ class UserStream:
         return self.buffer.tell() > 0
 
 
+class _PerUserPCMSink(voice_recv.AudioSink):
+    """
+    Receives per-user Opus frames from voice_recv, applies DAVE E2EE decryption
+    when the channel has end-to-end encryption active, then decodes to PCM.
+    """
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+        self._decoders: dict[int, opus_mod.Decoder] = {}
+
+    def wants_opus(self) -> bool:
+        # Take raw (possibly DAVE-encrypted) Opus bytes; we do Opus→PCM ourselves.
+        return True
+
+    def write(self, user, data: voice_recv.VoiceData):
+        if user is None:
+            return
+
+        from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
+        opus_bytes = data.opus
+        if not opus_bytes:
+            return
+
+        # Silence/FEC-fill packets are internally generated — no DAVE layer.
+        if not isinstance(data.packet, (SilencePacket, FakePacket)):
+            dave_session = self._get_dave_session()
+            if dave_session is not None and dave_session.ready and not dave_session.can_passthrough:
+                try:
+                    opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
+                except Exception as e:
+                    logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+                    return
+
+        decoder = self._decoders.get(user.id)
+        if decoder is None:
+            decoder = opus_mod.Decoder()
+            self._decoders[user.id] = decoder
+
+        try:
+            pcm = decoder.decode(opus_bytes, fec=False)
+        except Exception as e:
+            logger.debug(f"Opus decode failed for user {user.id}: {e}")
+            return
+
+        self._callback(user, pcm)
+
+    def _get_dave_session(self):
+        vc = self._voice_client
+        conn = getattr(vc, "_connection", None) if vc else None
+        return getattr(conn, "dave_session", None) if conn else None
+
+    def cleanup(self):
+        self._decoders.clear()
+
+
 class VoiceRecorder:
     """
     Manages per-user audio recording for a single voice channel connection.
@@ -98,22 +161,16 @@ class VoiceRecorder:
         self._remux_queue: asyncio.Queue = asyncio.Queue()
         self._remux_task: asyncio.Task = None
 
-    async def start(self, voice_client: discord.VoiceClient):
+    async def start(self, voice_client: voice_recv.VoiceRecvClient):
         """Begin recording all consented users in the channel."""
         self.voice_client = voice_client
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
         self._running = True
 
-        # Start listening - discord.py 2.x voice receive
-        self.voice_client.start_recording(
-            discord.sinks.PCMSink(),
-            self._recording_finished_callback,
-            self.channel,
-        )
+        sink = _PerUserPCMSink(self.on_audio_packet)
+        self.voice_client.listen(sink)
 
-        # Start segment rotation loop
         self._rotation_task = asyncio.create_task(self._rotation_loop())
-        # Start background remux worker
         self._remux_task = asyncio.create_task(self._remux_worker())
 
         logger.info(f"Recording started in {self.guild.name} / #{self.channel.name}")
@@ -129,10 +186,9 @@ class VoiceRecorder:
             except asyncio.CancelledError:
                 pass
 
-        # Stop discord recording
         try:
-            if self.voice_client and self.voice_client.recording:
-                self.voice_client.stop_recording()
+            if self.voice_client and self.voice_client.is_listening():
+                self.voice_client.stop_listening()
         except Exception as e:
             logger.warning(f"Error stopping recording: {e}")
 
@@ -176,22 +232,6 @@ class VoiceRecorder:
             self.user_streams[user.id] = stream
 
         stream.write(data)
-
-    async def _recording_finished_callback(self, sink, channel, *args):
-        """Callback when discord.py recording stops. Process any buffered audio."""
-        for user_id, audio in sink.audio_data.items():
-            if user_id in self.consented_users:
-                stream = self.user_streams.get(user_id)
-                if stream is None:
-                    stream = UserStream(
-                        user_id=user_id,
-                        guild_id=self.guild.id,
-                        channel_id=self.channel.id,
-                        base_path=self.recordings_path,
-                    )
-                    self.user_streams[user_id] = stream
-                audio.file.seek(0)
-                stream.write(audio.file.read())
 
     async def _rotation_loop(self):
         """Periodically rotate segments for all active users."""

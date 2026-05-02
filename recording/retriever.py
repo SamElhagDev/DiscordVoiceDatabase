@@ -48,15 +48,26 @@ class ClipRetriever:
         if not segments:
             return None
 
-        # Filter to segments that actually have files on disk
+        # Filter to segments that actually have files on disk.
+        # Fall back to the sibling .pcm file if the .ogg hasn't been remuxed yet.
         valid_segments = []
         for seg in segments:
             # seg: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path)
             file_path = seg[6]
             if os.path.exists(file_path):
                 valid_segments.append(seg)
+            else:
+                pcm_path = os.path.splitext(file_path)[0] + ".pcm"
+                if os.path.exists(pcm_path):
+                    # Wrap the row with the pcm path so ffmpeg can read it directly
+                    valid_segments.append(seg[:6] + (pcm_path,))
+                    logger.debug(f"Using PCM fallback for segment {seg[0]}: {pcm_path}")
 
         if not valid_segments:
+            logger.warning(
+                f"No files on disk for user {user_id} in range [{start_ts:.0f}, {end_ts:.0f}]. "
+                f"DB returned {len(segments)} segment(s): {[s[6] for s in segments]}"
+            )
             return None
 
         # Build output filename
@@ -92,16 +103,27 @@ class ClipRetriever:
 
     @staticmethod
     def _trim_single(input_path: str, output_path: str, start_sec: float, duration_sec: float):
-        """Trim a single OGG file."""
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", input_path,
-            "-ss", str(start_sec),
-            "-t", str(duration_sec),
-            "-c:a", "libopus",
-            "-b:a", "48k",
-            output_path,
-        ]
+        """Trim a single OGG or PCM file."""
+        if input_path.endswith(".pcm"):
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "s16le", "-ar", "48000", "-ac", "2",
+                "-i", input_path,
+                "-ss", str(start_sec),
+                "-t", str(duration_sec),
+                "-c:a", "libopus", "-b:a", "48k", "-ac", "1",
+                output_path,
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-ss", str(start_sec),
+                "-t", str(duration_sec),
+                "-c:a", "libopus",
+                "-b:a", "48k",
+                output_path,
+            ]
         result = subprocess.run(cmd, capture_output=True, timeout=120)
         if result.returncode != 0:
             raise RuntimeError(
