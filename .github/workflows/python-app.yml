@@ -103,7 +103,7 @@ jobs:
             $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                         [Environment]::GetEnvironmentVariable('Path','User')
           }
-          ffmpeg -version | Select-Object -First 1
+          Write-Host ((ffmpeg -version 2>&1)[0])
 
       - name: Create data directories
         shell: powershell
