@@ -61,8 +61,10 @@ jobs:
             }
             if (-not $wingetExe) { throw "winget.exe not found on this runner. Install App Installer from the Microsoft Store." }
 
-            # winget's archive extractor fails as SYSTEM (0x8A150004) when TEMP
-            # points to C:\Windows\Temp - redirect to a path SYSTEM can write to.
+            # winget's archive extractor (0x8A150004) requires an interactive
+            # shell session it never has as SYSTEM. Redirect TEMP so the zip
+            # lands in a known location, let winget download + verify the hash,
+            # then extract the zip ourselves when winget fails at that step.
             $wtTemp = 'C:\winget-temp'
             New-Item -ItemType Directory -Path $wtTemp -Force | Out-Null
             $env:TEMP = $wtTemp
@@ -70,7 +72,32 @@ jobs:
 
             & $wingetExe install --id Gyan.FFmpeg -e --scope machine `
               --accept-package-agreements --accept-source-agreements --silent
-            if ($LASTEXITCODE -ne 0) { throw "winget install failed with exit code $LASTEXITCODE" }
+            $wingetExit = $LASTEXITCODE
+
+            if ($wingetExit -eq -1978335140) {
+              # Extraction failed - find the verified zip winget left in TEMP
+              Write-Host "winget extraction failed (SYSTEM shell limitation); extracting zip manually..."
+              $zip = Get-ChildItem $wtTemp -Recurse -Filter '*.zip' -ErrorAction SilentlyContinue |
+                     Sort-Object LastWriteTime | Select-Object -Last 1
+              if (-not $zip) { throw "Could not find downloaded ffmpeg zip under $wtTemp" }
+
+              $dest = 'C:\ffmpeg'
+              Write-Host "Extracting $($zip.FullName) -> $dest ..."
+              Expand-Archive -Path $zip.FullName -DestinationPath $dest -Force
+
+              # Zip contains a versioned subfolder; find ffmpeg.exe and use its parent
+              $ffmpegExe = Get-ChildItem $dest -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
+              if (-not $ffmpegExe) { throw "ffmpeg.exe not found after extraction" }
+              $binDir = $ffmpegExe.DirectoryName
+
+              # Persist bin dir to system PATH permanently
+              $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+              if ($machinePath -notlike "*$binDir*") {
+                [Environment]::SetEnvironmentVariable('Path', "$machinePath;$binDir", 'Machine')
+              }
+            } elseif ($wingetExit -ne 0) {
+              throw "winget install failed with exit code $wingetExit"
+            }
 
             # Reload PATH so ffmpeg is visible in this session
             $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
