@@ -48,7 +48,26 @@ jobs:
         run: |
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Host "Installing ffmpeg via winget..."
-            winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements --silent
+            # Locate winget - it may not be in PATH for service/SYSTEM accounts
+            $wingetExe = Get-Command winget -ErrorAction SilentlyContinue |
+                         Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+            if (-not $wingetExe) {
+              $wingetExe = Resolve-Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe" `
+                             -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path
+            }
+            if (-not $wingetExe) {
+              $wingetExe = Get-ChildItem "C:\Program Files\WindowsApps" -Recurse -Filter winget.exe `
+                             -ErrorAction SilentlyContinue | Select-Object -Last 1 -ExpandProperty FullName
+            }
+            if (-not $wingetExe) { throw "winget.exe not found on this runner. Install App Installer from the Microsoft Store." }
+
+            & $wingetExe install --id Gyan.FFmpeg -e --scope machine `
+              --accept-package-agreements --accept-source-agreements --silent
+            if ($LASTEXITCODE -ne 0) { throw "winget install failed with exit code $LASTEXITCODE" }
+
+            # Reload PATH so ffmpeg is visible in this session
+            $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                        [Environment]::GetEnvironmentVariable('Path','User')
           }
           ffmpeg -version | Select-Object -First 1
 
