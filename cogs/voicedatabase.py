@@ -363,6 +363,143 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         except OSError:
             pass
 
+    @commands.hybrid_command(
+        name="playclip",
+        description="Play a recorded clip in your current voice channel.",
+    )
+    @app_commands.describe(
+        user="The user whose audio you want to play",
+        start="Start timestamp (YYYY-MM-DDTHH:MM:SS UTC)",
+        minutes="Duration in minutes",
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def play_clip(
+        self,
+        context: Context,
+        user: discord.User,
+        start: str,
+        minutes: int = 10,
+    ) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        is_registered = await self.bot.database.is_user_registered(
+            context.guild.id, user.id
+        )
+        if not is_registered:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"{user.mention} is not opted in to recording.",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        try:
+            start_time = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+        except ValueError:
+            await context.send(
+                embed=discord.Embed(
+                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS`.",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        if minutes < 1 or minutes > 60:
+            await context.send(
+                embed=discord.Embed(
+                    description="Duration must be between 1 and 60 minutes.",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        # Determine voice channel — prefer the invoker's channel
+        voice_channel = None
+        if context.author.voice and context.author.voice.channel:
+            voice_channel = context.author.voice.channel
+        elif context.guild.id in self.recorders:
+            voice_channel = self.recorders[context.guild.id].channel
+
+        if voice_channel is None:
+            await context.send(
+                embed=discord.Embed(
+                    description="Join a voice channel first (or start recording so the bot is already connected).",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        await context.defer()
+
+        clip_path = await self.retriever.retrieve_clip(
+            user_id=user.id,
+            start_time=start_time,
+            duration_minutes=minutes,
+            guild_id=context.guild.id,
+        )
+
+        if clip_path is None:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No recorded audio found for {user.mention} at that time.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        # Connect to VC if not already there; reuse existing connection if recording
+        joined_for_playback = False
+        vc = context.guild.voice_client
+        if vc is None or not vc.is_connected():
+            try:
+                vc = await voice_channel.connect()
+                joined_for_playback = True
+            except Exception as e:
+                await context.send(
+                    embed=discord.Embed(
+                        description=f"Failed to connect to voice: {e}",
+                        color=0xED4245,
+                    )
+                )
+                os.remove(clip_path)
+                return
+        elif vc.channel != voice_channel:
+            await vc.move_to(voice_channel)
+
+        # Stop any currently playing audio
+        if vc.is_playing():
+            vc.stop()
+
+        done_event = asyncio.Event()
+
+        def after_play(error):
+            if error:
+                logger.error(f"Playback error: {error}")
+            done_event.set()
+
+        source = discord.FFmpegOpusAudio(clip_path)
+        vc.play(source, after=after_play)
+
+        await context.send(
+            embed=discord.Embed(
+                description=f"Playing clip for {user.mention} ({minutes} min from `{start}`).",
+                color=0x5865F2,
+            )
+        )
+
+        await done_event.wait()
+
+        try:
+            os.remove(clip_path)
+        except OSError:
+            pass
+
+        if joined_for_playback:
+            await vc.disconnect()
+
     # ── Settings commands ───────────────────────────────────────────────
 
     @commands.hybrid_command(

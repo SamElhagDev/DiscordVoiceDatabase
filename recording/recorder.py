@@ -99,11 +99,17 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         # Silence/FEC-fill packets are internally generated — no DAVE layer.
         if not isinstance(data.packet, (SilencePacket, FakePacket)):
             dave_session = self._get_dave_session()
-            if dave_session is not None and dave_session.ready and not dave_session.can_passthrough:
-                try:
-                    opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
-                except Exception as e:
-                    logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+            if dave_session is not None:
+                if dave_session.can_passthrough(user.id):
+                    pass  # DAVE transition window: packets are plain Opus
+                elif dave_session.ready:
+                    try:
+                        opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
+                    except Exception as e:
+                        logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+                        return
+                else:
+                    # DAVE active but MLS group not yet established — skip to avoid garbage PCM
                     return
 
         decoder = self._decoders.get(user.id)
