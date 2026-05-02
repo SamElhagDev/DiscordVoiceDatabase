@@ -225,6 +225,19 @@ class DiscordBot(commands.Bot):
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
+        elif isinstance(error, commands.CommandNotFound):
+            pass  # ignore unknown commands silently
+        elif isinstance(error, commands.CommandInvokeError):
+            self.logger.error(
+                f"Command '{context.command}' raised an exception: {error.original}",
+                exc_info=error.original,
+            )
+            embed = discord.Embed(
+                title="Error!",
+                description=f"An internal error occurred: `{type(error.original).__name__}: {error.original}`",
+                color=0xE02B2B,
+            )
+            await context.send(embed=embed)
         else:
             raise error
 
