@@ -145,3 +145,8 @@ cython_debug/
 
 # Log file
 discord.log
+
+# Recording data
+recordings/
+clips/
+data/

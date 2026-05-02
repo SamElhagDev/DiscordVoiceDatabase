@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import platform
@@ -15,8 +14,19 @@ from database import DatabaseManager
 
 load_dotenv()
 
+# Configurable paths — override via .env or environment variables
+# Defaults work for both Windows direct-run and Docker
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "database.db"))
+RECORDINGS_PATH = os.getenv("RECORDINGS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings"))
+CLIPS_PATH = os.getenv("CLIPS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips"))
 
-intents =discord.Intents.default()
+# Ensure directories exist
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+os.makedirs(RECORDINGS_PATH, exist_ok=True)
+os.makedirs(CLIPS_PATH, exist_ok=True)
+
+
+intents = discord.Intents.default()
 intents.bans = True
 intents.dm_messages = True
 intents.dm_reactions = True
@@ -30,37 +40,23 @@ intents.guild_typing = True
 intents.guilds = True
 intents.integrations = True
 intents.invites = True
-intents.messages = True # `message_content` is required to get the content of the messages
+intents.messages = True
 intents.reactions = True
 intents.typing = True
 intents.voice_states = True
 intents.webhooks = True
-
 intents.members = True
 intents.message_content = True
 intents.presences = True
 
 
-"""
-Uncomment this if you want to use prefix (normal) commands.
-It is recommended to use slash commands and therefore not use prefix commands.
-
-If you want to use prefix commands, make sure to also enable the intent below in the Discord developer portal.
-"""
-# intents.message_content = True
-
-# Setup both of the loggers
-
-
 class LoggingFormatter(logging.Formatter):
-    # Colors
     black = "\x1b[30m"
     red = "\x1b[31m"
     green = "\x1b[32m"
     yellow = "\x1b[33m"
     blue = "\x1b[34m"
     gray = "\x1b[38m"
-    # Styles
     reset = "\x1b[0m"
     bold = "\x1b[1m"
 
@@ -86,17 +82,14 @@ class LoggingFormatter(logging.Formatter):
 logger = logging.getLogger("discord_bot")
 logger.setLevel(logging.INFO)
 
-# Console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
-# File handler
 file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
 file_handler_formatter = logging.Formatter(
     "[{asctime}] [{levelname:<8}] {name}: {message}", "%Y-%m-%d %H:%M:%S", style="{"
 )
 file_handler.setFormatter(file_handler_formatter)
 
-# Add the handlers
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
@@ -104,43 +97,28 @@ logger.addHandler(file_handler)
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(
-            command_prefix=commands.when_mentioned_or(os.getenv("PREFIX")),
+            command_prefix=commands.when_mentioned_or(os.getenv("PREFIX", "!")),
             intents=intents,
             help_command=None,
         )
-        """
-        This creates custom bot variables so that we can access these variables in cogs more easily.
-
-        For example, The logger is available using the following code:
-        - self.logger # In this class
-        - bot.logger # In this file
-        - self.bot.logger # In cogs
-        """
         self.logger = logger
         self.database = None
-        self.bot_prefix = os.getenv("PREFIX")
-        self.invite_link = os.getenv("INVITE_LINK")
+        self.bot_prefix = os.getenv("PREFIX", "!")
+        self.invite_link = os.getenv("INVITE_LINK", "")
 
-    """
-     D:\DiscordVoiceDatabase\Database -  For Deployment
-     Y:\DiscordVoiceDatabase\Database -  Local for Test 
-    """
     async def init_db(self) -> None:
-        async with aiosqlite.connect(        
-            f"D:\DiscordVoiceDatabase\Database\database.db"
-        ) as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             with open(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql",
-                encoding = "utf-8"
+                os.path.join(os.path.realpath(os.path.dirname(__file__)), "database", "schema.sql"),
+                encoding="utf-8",
             ) as file:
                 await db.executescript(file.read())
             await db.commit()
 
     async def load_cogs(self) -> None:
-        """
-        The code in this function is executed whenever the bot will start.
-        """
-        for file in os.listdir(f"{os.path.realpath(os.path.dirname(__file__))}/cogs"):
+        for file in os.listdir(
+            os.path.join(os.path.realpath(os.path.dirname(__file__)), "cogs")
+        ):
             if file.endswith(".py"):
                 extension = file[:-3]
                 try:
@@ -151,115 +129,44 @@ class DiscordBot(commands.Bot):
                     self.logger.error(
                         f"Failed to load extension {extension}\n{exception}"
                     )
-                    
-    async def joinPrimaryChannel(self):
-        now = int(time.time())
-        for guild in self.bot.guilds:
-            s = self.get_settings(guild.id)
-            if not s.enabled:
-                continue
-
-
-            # If already recording somewhere in this guild, check for stop condition
-            active_chan_id = self._sessions.get(guild.id)
-            if active_chan_id:
-                vc = guild.voice_client
-                # if bot disconnected or channel changed, clear session
-                if not vc or not vc.channel or vc.channel.id != active_chan_id:
-                    self._sessions.pop(guild.id, None)
-                    continue
-                # stop if empty (with grace)
-                allowed_present = self._allowed_users_in_channel(vc.channel)
-                key = (guild.id, vc.channel.id)
-                if allowed_present:
-                    self._last_seen_nonempty[key] = now
-                elif now - self._last_seen_nonempty.get(key, now) >= GRACE_EMPTY_SEC:
-                    try:
-                        vc.stop_recording()
-                        await vc.disconnect(force=True)
-                    except Exception:
-                        pass
-                    self._sessions.pop(guild.id, None)
-                continue
-
-
-                # Not recording: look for an eligible channel to start
-                for ch in guild.voice_channels:
-                    if not isinstance(ch, discord.VoiceChannel):
-                        continue
-                    if not self._eligible_channel(guild, ch, s):
-                        continue
-                    allowed_present = self._allowed_users_in_channel(ch)
-                    if len(allowed_present) >= s.min_users:
-                        # join & start
-                        try:
-                            vc = await ch.connect()
-                        except discord.ClientException:
-                            continue
-                        await self._start_record_cb(vc) # starts segmented per-user recording
-                        self._sessions[guild.id] = ch.id
-                        self._last_seen_nonempty[(guild.id, ch.id)] = now
-                        break
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
-        """
-        Setup the game status task of the bot.
-        """
-        statuses = ["with you!", "with Krypton!", "with humans!"]
+        statuses = [
+            "Recording voices...",
+            "Listening carefully...",
+            "Archiving audio...",
+        ]
         await self.change_presence(activity=discord.Game(random.choice(statuses)))
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
-        """
-        Before starting the status changing task, we make sure the bot is ready
-        """
         await self.wait_until_ready()
 
-    """ 
-     D:\DiscordVoiceDatabase\Database -  For Deployment
-     Y:\DiscordVoiceDatabase\Database -  Local for Test 
-    """
     async def setup_hook(self) -> None:
-        """
-        This will just be executed when the bot starts the first time.
-        """
         self.logger.info(f"Logged in as {self.user.name}")
         self.logger.info(f"discord.py API version: {discord.__version__}")
         self.logger.info(f"Python version: {platform.python_version()}")
         self.logger.info(
             f"Running on: {platform.system()} {platform.release()} ({os.name})"
         )
+        self.logger.info(f"Database: {DB_PATH}")
+        self.logger.info(f"Recordings: {RECORDINGS_PATH}")
+        self.logger.info(f"Clips: {CLIPS_PATH}")
         self.logger.info("-------------------")
         await self.init_db()
         await self.load_cogs()
         self.status_task.start()
         self.database = DatabaseManager(
-            connection=await aiosqlite.connect(
-                f"D:\DiscordVoiceDatabase\Database\database.db"
-            )
+            connection=await aiosqlite.connect(DB_PATH)
         )
-        
-        """        
-        await self.joinPrimaryChannel();
-        """
 
     async def on_message(self, message: discord.Message) -> None:
-        """
-        The code in this event is executed every time someone sends a message, with or without the prefix
-
-        :param message: The message that was sent.
-        """
         if message.author == self.user or message.author.bot:
             return
         await self.process_commands(message)
 
     async def on_command_completion(self, context: Context) -> None:
-        """>>
-        The code in this event is executed every time a normal command has been *successfully* executed.
-
-        :param context: The context of the command that has been executed.
-        """
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
@@ -273,12 +180,6 @@ class DiscordBot(commands.Bot):
             )
 
     async def on_command_error(self, context: Context, error) -> None:
-        """
-        The code in this event is executed every time a normal valid command catches an error.
-
-        :param context: The context of the normal command that failed executing.
-        :param error: The error that has been faced.
-        """
         if isinstance(error, commands.CommandOnCooldown):
             minutes, seconds = divmod(error.retry_after, 60)
             hours, minutes = divmod(minutes, 60)
@@ -320,7 +221,6 @@ class DiscordBot(commands.Bot):
         elif isinstance(error, commands.MissingRequiredArgument):
             embed = discord.Embed(
                 title="Error!",
-                # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
                 description=str(error).capitalize(),
                 color=0xE02B2B,
             )

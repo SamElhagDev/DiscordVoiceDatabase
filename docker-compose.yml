@@ -1,15 +1,23 @@
 services:
   discord-bot:
     build: .
-    image: python-discord-bot-template
+    image: discord-voice-database
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - DB_PATH=/bot/data/database.db
+      - RECORDINGS_PATH=/bot/recordings
+      - CLIPS_PATH=/bot/clips
     volumes:
-      - ./database:/bot/database
+      # Persistent volumes — survive container restarts and rebuilds
+      - bot-data:/bot/data
+      - bot-recordings:/bot/recordings
+      - bot-clips:/bot/clips
+      # Log file (optional, bind mount)
       - ./discord.log:/bot/discord.log
 
-    # Alternatively you can set the environment variables as such:
-    # /!\ The token shouldn't be written here, as this file is not ignored from Git /!\
-    # environment:
-    #   - PREFIX=YOUR_BOT_PREFIX_HERE
-    #   - INVITE_LINK=YOUR_BOT_INVITE_LINK_HERE
+volumes:
+  bot-data:
+  bot-recordings:
+  bot-clips:

@@ -18,6 +18,10 @@ jobs:
       APP_TASK: DiscordVoiceDatabase             # Scheduled Task name
       APP_PORT: 8080                   # if your app uses PORT
       TOKEN: ${{ secrets.TOKEN }}
+      DB_PATH: C:\apps\DiscordVoiceDatabase\data\database.db
+      RECORDINGS_PATH: C:\apps\DiscordVoiceDatabase\recordings
+      CLIPS_PATH: C:\apps\DiscordVoiceDatabase\clips
+      RETENTION_DAYS: "7"
 
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +42,22 @@ jobs:
         run: |
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Ensure ffmpeg is available
+        shell: powershell
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing ffmpeg via winget..."
+            winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements --silent
+          }
+          ffmpeg -version | Select-Object -First 1
+
+      - name: Create data directories
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path $env:DB_PATH.Replace('\database.db','') -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:RECORDINGS_PATH -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:CLIPS_PATH -Force | Out-Null
 
       # 1) Copy code to a persistent folder
       - name: Deploy files to persistent folder
@@ -131,6 +151,14 @@ jobs:
               # verify it's in the machine scope now
               $m = [Environment]::GetEnvironmentVariable('INVITE_LINK','Machine')
               if (-not $m) { throw "Failed to set machine env var INVITE_LINK." }
+
+      - name: Set recording paths as machine env vars
+        shell: powershell
+        run: |
+              setx DB_PATH "$env:DB_PATH" /M | Out-Null
+              setx RECORDINGS_PATH "$env:RECORDINGS_PATH" /M | Out-Null
+              setx CLIPS_PATH "$env:CLIPS_PATH" /M | Out-Null
+              setx RETENTION_DAYS "$env:RETENTION_DAYS" /M | Out-Null
 
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)
