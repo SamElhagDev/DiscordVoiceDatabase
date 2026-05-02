@@ -61,6 +61,13 @@ jobs:
             }
             if (-not $wingetExe) { throw "winget.exe not found on this runner. Install App Installer from the Microsoft Store." }
 
+            # winget's archive extractor fails as SYSTEM (0x8A150004) when TEMP
+            # points to C:\Windows\Temp - redirect to a path SYSTEM can write to.
+            $wtTemp = 'C:\winget-temp'
+            New-Item -ItemType Directory -Path $wtTemp -Force | Out-Null
+            $env:TEMP = $wtTemp
+            $env:TMP  = $wtTemp
+
             & $wingetExe install --id Gyan.FFmpeg -e --scope machine `
               --accept-package-agreements --accept-source-agreements --silent
             if ($LASTEXITCODE -ne 0) { throw "winget install failed with exit code $LASTEXITCODE" }
