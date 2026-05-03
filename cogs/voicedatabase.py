@@ -433,13 +433,33 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             else:
                 lines.append(f"<t:{seg_start_ts}:t> → ongoing")
 
-        embed = discord.Embed(
-            title=f"Recordings for {user.display_name} on {date}",
-            description="\n".join(lines),
-            color=0x5865F2,
-        )
-        embed.set_footer(text=f"{len(segments)} segment(s) • Use /clip to retrieve audio")
-        await context.send(embed=embed)
+        # Split lines into pages that fit within Discord's 4096-char embed limit
+        pages = []
+        current_lines = []
+        current_len = 0
+        for line in lines:
+            # +1 for the newline between lines
+            if current_len + len(line) + 1 > 4096 and current_lines:
+                pages.append(current_lines)
+                current_lines = []
+                current_len = 0
+            current_lines.append(line)
+            current_len += len(line) + 1
+        if current_lines:
+            pages.append(current_lines)
+
+        for i, page_lines in enumerate(pages):
+            title = f"Recordings for {user.display_name} on {date}"
+            if len(pages) > 1:
+                title += f" ({i + 1}/{len(pages)})"
+            embed = discord.Embed(
+                title=title,
+                description="\n".join(page_lines),
+                color=0x5865F2,
+            )
+            if i == len(pages) - 1:
+                embed.set_footer(text=f"{len(segments)} segment(s) • Use /clip to retrieve audio")
+            await context.send(embed=embed)
 
     @commands.hybrid_command(
         name="playclip",
