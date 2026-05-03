@@ -1,6 +1,6 @@
 aiohttp
 aiosqlite
-discord.py[voice]
+discord.py[voice]>=2.7.1
 discord-ext-voice-recv
 davey
 python-dotenv
