@@ -56,8 +56,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         Returns the VoiceClient or None on failure."""
         guild = channel.guild
         if guild.voice_client:
-            await guild.voice_client.disconnect(force=True)
-            await asyncio.sleep(2)  # let Discord invalidate the stale session
+            try:
+                await asyncio.wait_for(guild.voice_client.disconnect(force=False), timeout=5.0)
+            except Exception:
+                await guild.voice_client.disconnect(force=True)
+            await asyncio.sleep(2)  # let Discord process the leave before rejoining
 
         for attempt in range(3):
             try:
