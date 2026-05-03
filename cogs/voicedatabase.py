@@ -57,17 +57,23 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         guild = channel.guild
         if guild.voice_client:
             await guild.voice_client.disconnect(force=True)
-            await asyncio.sleep(1)  # let Discord invalidate the stale session
+            await asyncio.sleep(2)  # let Discord invalidate the stale session
 
-        for attempt in range(2):
+        for attempt in range(3):
             try:
-                return await channel.connect(cls=voice_recv.VoiceRecvClient)
-            except (discord.ClientException, discord.errors.ConnectionClosed) as e:
-                if attempt == 0:
-                    logger.warning(f"Voice connect failed (attempt 1): {e} — retrying after delay")
+                vc = await channel.connect(cls=voice_recv.VoiceRecvClient, timeout=30.0, reconnect=False)
+                if not vc.is_connected():
+                    logger.warning(f"Voice connect returned but is_connected() is False (attempt {attempt + 1})")
+                    await vc.disconnect(force=True)
                     await asyncio.sleep(2)
+                    continue
+                return vc
+            except (discord.ClientException, discord.errors.ConnectionClosed) as e:
+                logger.warning(f"Voice connect failed (attempt {attempt + 1}): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(3)
                 else:
-                    logger.error(f"Voice connect failed (attempt 2): {e}")
+                    logger.error("Voice connect failed after 3 attempts")
                     return None
 
     # ── Participation commands ──────────────────────────────────────────
