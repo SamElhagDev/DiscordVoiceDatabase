@@ -375,6 +375,73 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             pass
 
     @commands.hybrid_command(
+        name="listclips",
+        description="List all recorded segments for a user on a given day.",
+    )
+    @app_commands.describe(
+        user="The user to list recordings for",
+        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-03)",
+    )
+    async def list_clips(
+        self,
+        context: Context,
+        user: discord.User,
+        date: str,
+    ) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
+        except ValueError:
+            await context.send(
+                embed=discord.Embed(
+                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-03`).",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        day_end = day_start + timedelta(days=1)
+
+        segments = await self.bot.database.get_segments_in_range(
+            user_id=user.id,
+            start_ts=day_start.timestamp(),
+            end_ts=day_end.timestamp(),
+            guild_id=context.guild.id,
+        )
+
+        if not segments:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No recordings found for {user.mention} on {date}.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        lines = []
+        for seg in segments:
+            # seg: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path)
+            seg_start_ts = int(seg[4])
+            if seg[5] is not None:
+                seg_end_ts = int(seg[5])
+                duration_sec = int(seg[5] - seg[4])
+                duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
+                lines.append(f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})")
+            else:
+                lines.append(f"<t:{seg_start_ts}:t> → ongoing")
+
+        embed = discord.Embed(
+            title=f"Recordings for {user.display_name} on {date}",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"{len(segments)} segment(s) • Use /clip to retrieve audio")
+        await context.send(embed=embed)
+
+    @commands.hybrid_command(
         name="playclip",
         description="Play a recorded clip in your current voice channel.",
     )
