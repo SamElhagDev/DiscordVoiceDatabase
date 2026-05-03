@@ -9,6 +9,9 @@ import os
 logger = logging.getLogger("discord_bot")
 
 
+RECORDINGS_PATH = os.path.abspath(os.getenv("RECORDINGS_PATH", "recordings"))
+
+
 class SegmentCleanup:
     """Runs periodic cleanup of old audio segments."""
 
@@ -35,23 +38,36 @@ class SegmentCleanup:
 
     async def _run_cleanup(self):
         try:
-            old_files = await self.db.prune_old_segments(self.default_retention_days)
+            old_segments = await self.db.get_expired_segments(self.default_retention_days)
+            if not old_segments:
+                return
+
             removed = 0
-            for file_path in old_files:
+            deleted_ids = []
+            recordings_root = os.path.abspath(RECORDINGS_PATH)
+
+            for seg_id, file_path in old_segments:
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                        removed += 1
-                        # Try to remove empty parent directories
-                        parent = os.path.dirname(file_path)
-                        while parent and parent != "recordings":
-                            try:
-                                os.rmdir(parent)  # only removes if empty
-                                parent = os.path.dirname(parent)
-                            except OSError:
-                                break
+                    pcm_path = os.path.splitext(file_path)[0] + ".pcm"
+                    if os.path.exists(pcm_path):
+                        os.remove(pcm_path)
+                    removed += 1
+                    deleted_ids.append(seg_id)
+
+                    parent = os.path.dirname(file_path)
+                    while parent and os.path.abspath(parent) != recordings_root:
+                        try:
+                            os.rmdir(parent)
+                            parent = os.path.dirname(parent)
+                        except OSError:
+                            break
                 except OSError as e:
                     logger.warning(f"Failed to delete {file_path}: {e}")
+
+            if deleted_ids:
+                await self.db.delete_segments_by_ids(deleted_ids)
 
             if removed > 0:
                 logger.info(f"Cleanup: removed {removed} old segment files")

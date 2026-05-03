@@ -10,10 +10,9 @@ import asyncio
 import io
 import logging
 import os
-import struct
 import subprocess
+import threading
 import time
-from pathlib import Path
 
 import discord
 import discord.opus as opus_mod
@@ -161,6 +160,7 @@ class VoiceRecorder:
         self.recordings_path = recordings_path
         self.segment_duration_sec = segment_duration_sec
         self.user_streams: dict[int, UserStream] = {}
+        self._streams_lock = threading.Lock()
         self.consented_users: set[int] = set()
         self._running = False
         self._rotation_task: asyncio.Task = None
@@ -198,11 +198,11 @@ class VoiceRecorder:
         except Exception as e:
             logger.warning(f"Error stopping recording: {e}")
 
-        # Flush all open segments
-        for user_id in list(self.user_streams.keys()):
+        with self._streams_lock:
+            user_ids = list(self.user_streams.keys())
+        for user_id in user_ids:
             await self._rotate_user(user_id, final=True)
 
-        # Wait for remux queue to drain
         await self._remux_queue.join()
         if self._remux_task:
             self._remux_task.cancel()
@@ -211,7 +211,8 @@ class VoiceRecorder:
             except asyncio.CancelledError:
                 pass
 
-        self.user_streams.clear()
+        with self._streams_lock:
+            self.user_streams.clear()
         logger.info(f"Recording stopped in {self.guild.name} / #{self.channel.name}")
 
     async def refresh_consent(self):
@@ -219,92 +220,93 @@ class VoiceRecorder:
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
 
     def on_audio_packet(self, user: discord.User, data: bytes):
-        """
-        Called for each audio packet received from a user.
-        discord.py PCMSink delivers decoded PCM frames here.
-        Only record if user has consented.
-        """
         if user.id not in self.consented_users:
             return
 
-        stream = self.user_streams.get(user.id)
-        if stream is None:
-            stream = UserStream(
-                user_id=user.id,
-                guild_id=self.guild.id,
-                channel_id=self.channel.id,
-                base_path=self.recordings_path,
-            )
-            self.user_streams[user.id] = stream
+        with self._streams_lock:
+            stream = self.user_streams.get(user.id)
+            if stream is None:
+                stream = UserStream(
+                    user_id=user.id,
+                    guild_id=self.guild.id,
+                    channel_id=self.channel.id,
+                    base_path=self.recordings_path,
+                )
+                self.user_streams[user.id] = stream
 
-        stream.write(data)
+            stream.write(data)
 
     async def _rotation_loop(self):
-        """Periodically rotate segments for all active users."""
         try:
             while self._running:
-                await asyncio.sleep(5)  # check every 5 seconds
-                for user_id in list(self.user_streams.keys()):
-                    stream = self.user_streams.get(user_id)
-                    if stream and stream.elapsed >= self.segment_duration_sec:
-                        await self._rotate_user(user_id)
+                await asyncio.sleep(5)
+                with self._streams_lock:
+                    due = [
+                        uid for uid, s in self.user_streams.items()
+                        if s.elapsed >= self.segment_duration_sec
+                    ]
+                for user_id in due:
+                    await self._rotate_user(user_id)
         except asyncio.CancelledError:
             pass
 
     async def _rotate_user(self, user_id: int, final: bool = False):
-        """Flush the current segment for a user and start a new one."""
-        stream = self.user_streams.get(user_id)
-        if stream is None or not stream.has_data:
+        with self._streams_lock:
+            stream = self.user_streams.get(user_id)
+            if stream is None or not stream.has_data:
+                if final:
+                    self.user_streams.pop(user_id, None)
+                return
+
+            pcm_path = stream.flush_to_disk()
+            ogg_path = stream.ogg_path
+            guild_id = stream.guild_id
+            channel_id = stream.channel_id
+            start_ts = stream.start_ts
+            elapsed = stream.elapsed
+
             if final:
                 self.user_streams.pop(user_id, None)
-            return
+            else:
+                self.user_streams[user_id] = UserStream(
+                    user_id=user_id,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    base_path=self.recordings_path,
+                )
 
-        # Flush PCM to disk
-        pcm_path = stream.flush_to_disk()
         if pcm_path is None:
             return
 
         end_ts = time.time()
         file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
 
-        # Register segment in DB (store the ogg path since we'll remux)
         segment_id = await self.db.add_segment(
-            guild_id=stream.guild_id,
-            channel_id=stream.channel_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
             user_id=user_id,
-            start_ts=stream.start_ts,
-            file_path=stream.ogg_path,
+            start_ts=start_ts,
+            file_path=ogg_path,
         )
         await self.db.close_segment(segment_id, end_ts, file_size)
 
-        # Queue for background remux
-        await self._remux_queue.put((pcm_path, stream.ogg_path))
+        await self._remux_queue.put((pcm_path, ogg_path, segment_id))
 
         logger.debug(
-            f"Segment rotated: user={user_id} duration={stream.elapsed:.1f}s size={file_size}"
+            f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
         )
 
-        # Start new segment or remove if final
-        if final:
-            self.user_streams.pop(user_id, None)
-        else:
-            self.user_streams[user_id] = UserStream(
-                user_id=user_id,
-                guild_id=stream.guild_id,
-                channel_id=stream.channel_id,
-                base_path=self.recordings_path,
-            )
-
     async def _remux_worker(self):
-        """Background task to convert PCM segments to OGG/Opus."""
         try:
             while True:
-                pcm_path, ogg_path = await self._remux_queue.get()
+                pcm_path, ogg_path, segment_id = await self._remux_queue.get()
                 try:
                     await asyncio.to_thread(self._remux_pcm_to_ogg, pcm_path, ogg_path)
-                    # Remove the PCM file after successful remux
                     if os.path.exists(pcm_path):
                         os.remove(pcm_path)
+                    ogg_size = os.path.getsize(ogg_path) if os.path.exists(ogg_path) else 0
+                    if ogg_size > 0:
+                        await self.db.update_segment_file_size(segment_id, ogg_size)
                 except Exception as e:
                     logger.error(f"Remux failed for {pcm_path}: {e}")
                 finally:

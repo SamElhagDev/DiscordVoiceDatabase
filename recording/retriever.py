@@ -7,7 +7,6 @@ import asyncio
 import logging
 import os
 import subprocess
-import tempfile
 import time
 from datetime import datetime
 
@@ -134,33 +133,52 @@ class ClipRetriever:
     def _concat_and_trim(
         file_list: list[str], output_path: str, start_sec: float, duration_sec: float
     ):
-        """Concatenate multiple OGG files and trim to the requested window."""
-        # Write a concat file list for ffmpeg
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as tmp:
-            for f in file_list:
-                # ffmpeg concat requires escaped single quotes in paths
-                escaped = f.replace("'", "'\\''")
-                tmp.write(f"file '{escaped}'\n")
-            concat_file = tmp.name
-
+        temp_oggs = []
         try:
-            cmd = [
-                "ffmpeg", "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_file,
+            # Normalise all inputs to OGG — filter_complex concat needs uniform codecs
+            normalized = []
+            for f in file_list:
+                if f.endswith(".pcm"):
+                    tmp_ogg = os.path.splitext(f)[0] + "_tmp.ogg"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-f", "s16le", "-ar", "48000", "-ac", "2",
+                        "-i", f,
+                        "-c:a", "libopus", "-b:a", "48k", "-ac", "1",
+                        tmp_ogg,
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, timeout=120)
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            f"ffmpeg pcm→ogg failed: {result.stderr.decode(errors='replace')}"
+                        )
+                    temp_oggs.append(tmp_ogg)
+                    normalized.append(tmp_ogg)
+                else:
+                    normalized.append(f)
+
+            # Build filter_complex concat — no temp text file needed
+            n = len(normalized)
+            cmd = ["ffmpeg", "-y"]
+            for f in normalized:
+                cmd.extend(["-i", f])
+            cmd.extend([
+                "-filter_complex", f"concat=n={n}:v=0:a=1[out]",
+                "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
                 "-c:a", "libopus",
                 "-b:a", "48k",
                 output_path,
-            ]
+            ])
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode != 0:
                 raise RuntimeError(
                     f"ffmpeg concat failed: {result.stderr.decode(errors='replace')}"
                 )
         finally:
-            os.unlink(concat_file)
+            for tmp_ogg in temp_oggs:
+                try:
+                    os.remove(tmp_ogg)
+                except OSError:
+                    pass

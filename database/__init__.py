@@ -95,6 +95,13 @@ class DatabaseManager:
         )
         await self.connection.commit()
 
+    async def update_segment_file_size(self, segment_id: int, file_size: int):
+        await self.connection.execute(
+            "UPDATE segments SET file_size=? WHERE id=?",
+            (file_size, segment_id),
+        )
+        await self.connection.commit()
+
     async def get_segments_in_range(
         self, user_id: int, start_ts: float, end_ts: float, guild_id: int = None
     ) -> list:
@@ -119,22 +126,24 @@ class DatabaseManager:
         async with rows as cursor:
             return await cursor.fetchall()
 
-    async def prune_old_segments(self, retention_days: int) -> list:
-        """Delete segment records older than retention_days. Returns file paths for cleanup."""
+    async def get_expired_segments(self, retention_days: int) -> list:
         cutoff = time.time() - (retention_days * 86400)
         rows = await self.connection.execute(
-            "SELECT file_path FROM segments WHERE end_ts IS NOT NULL AND end_ts < ?",
+            "SELECT id, file_path FROM segments WHERE end_ts IS NOT NULL AND end_ts < ?",
             (cutoff,),
         )
         async with rows as cursor:
-            old_files = [row[0] for row in await cursor.fetchall()]
+            return await cursor.fetchall()
 
+    async def delete_segments_by_ids(self, segment_ids: list):
+        if not segment_ids:
+            return
+        placeholders = ",".join("?" for _ in segment_ids)
         await self.connection.execute(
-            "DELETE FROM segments WHERE end_ts IS NOT NULL AND end_ts < ?",
-            (cutoff,),
+            f"DELETE FROM segments WHERE id IN ({placeholders})",
+            segment_ids,
         )
         await self.connection.commit()
-        return old_files
 
     # ── Settings operations ─────────────────────────────────────────────
 

@@ -6,7 +6,9 @@ and clip retrieval.
 import asyncio
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+EST = timezone(timedelta(hours=-4))
 
 import discord
 from discord import app_commands
@@ -271,7 +273,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @app_commands.describe(
         user="The user whose audio you want to retrieve",
-        start="Start timestamp (YYYY-MM-DDTHH:MM:SS)",
+        start="Start timestamp (YYYY-MM-DDTHH:MM:SS EST/EDT)",
         minutes="Duration in minutes",
     )
     async def retrieve_clip(
@@ -300,11 +302,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         # Parse the start timestamp
         try:
-            start_time = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+            start_time = datetime.fromisoformat(start).replace(tzinfo=EST)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
-                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS` (e.g. `2026-04-30T13:44:00`).",
+                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS` in EST/EDT (e.g. `2026-05-02T22:00:00`).",
                     color=0xED4245,
                 )
             )
@@ -369,7 +371,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @app_commands.describe(
         user="The user whose audio you want to play",
-        start="Start timestamp (YYYY-MM-DDTHH:MM:SS UTC)",
+        start="Start timestamp (YYYY-MM-DDTHH:MM:SS EST/EDT)",
         minutes="Duration in minutes",
     )
     @commands.has_permissions(manage_guild=True)
@@ -397,11 +399,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            start_time = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+            start_time = datetime.fromisoformat(start).replace(tzinfo=EST)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
-                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS`.",
+                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS` in EST/EDT (e.g. `2026-05-02T22:00:00`).",
                     color=0xED4245,
                 )
             )
@@ -464,7 +466,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                         color=0xED4245,
                     )
                 )
-                os.remove(clip_path)
+                try:
+                    os.remove(clip_path)
+                except OSError:
+                    pass
                 return
         elif vc.channel != voice_channel:
             await vc.move_to(voice_channel)
@@ -473,12 +478,13 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         if vc.is_playing():
             vc.stop()
 
+        loop = asyncio.get_running_loop()
         done_event = asyncio.Event()
 
         def after_play(error):
             if error:
                 logger.error(f"Playback error: {error}")
-            done_event.set()
+            loop.call_soon_threadsafe(done_event.set)
 
         source = discord.FFmpegOpusAudio(clip_path)
         vc.play(source, after=after_play)
