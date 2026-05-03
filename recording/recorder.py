@@ -173,6 +173,16 @@ class VoiceRecorder:
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
         self._running = True
 
+        # Wait for the voice WebSocket to be fully connected before listening
+        for _ in range(20):
+            if self.voice_client.is_connected():
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise discord.ClientException(
+                "Voice client did not become ready after 5 seconds"
+            )
+
         sink = _PerUserPCMSink(self.on_audio_packet)
         self.voice_client.listen(sink)
 
