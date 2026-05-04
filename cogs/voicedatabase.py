@@ -414,7 +414,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         # Filter out mostly-silent segments by checking bytes-per-second.
         # seg tuple: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size)
-        MIN_BYTES_PER_SEC = 1500
+        MIN_BYTES_PER_SEC = 5000
         segments = []
         for seg in all_segments:
             file_size = seg[7] or 0
@@ -852,6 +852,7 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             try:
                 vc = await voice_channel.connect()
                 joined_for_playback = True
+                await asyncio.sleep(2)
             except Exception as e:
                 await interaction.followup.send(
                     embed=discord.Embed(description=f"Failed to connect: {e}", color=0xED4245),
@@ -864,14 +865,17 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
                 return
         elif vc.channel != voice_channel:
             await vc.move_to(voice_channel)
+            await asyncio.sleep(1)
 
         if vc.is_playing():
             vc.stop()
 
         loop = asyncio.get_running_loop()
         done_event = asyncio.Event()
+        playback_error = [None]
 
         def after_play(error):
+            playback_error[0] = error
             if error:
                 logger.error(f"Playback error: {error}")
             loop.call_soon_threadsafe(done_event.set)
@@ -889,6 +893,14 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
 
         await done_event.wait()
 
+        if playback_error[0]:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"Playback failed: `{playback_error[0]}`",
+                    color=0xED4245,
+                )
+            )
+
         try:
             os.remove(clip_path)
         except OSError:
@@ -896,6 +908,16 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
 
         if joined_for_playback:
             await vc.disconnect()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        logger.error(f"PlayModal error: {error}", exc_info=True)
+        try:
+            await interaction.followup.send(
+                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
+                ephemeral=True,
+            )
+        except Exception:
+            pass
 
 
 class _ClipSelectView(discord.ui.View):
