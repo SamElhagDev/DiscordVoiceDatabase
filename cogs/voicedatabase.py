@@ -470,7 +470,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         start="Start timestamp (YYYY-MM-DDTHH:MM:SS EST/EDT)",
         minutes="Duration in minutes",
     )
-    @commands.has_permissions(manage_guild=True)
     async def play_clip(
         self,
         context: Context,
