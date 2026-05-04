@@ -521,6 +521,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             try:
                 vc = await voice_channel.connect()
                 joined_for_playback = True
+                await asyncio.sleep(2)
             except Exception as e:
                 await context.send(
                     embed=discord.Embed(
@@ -535,15 +536,17 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 return
         elif vc.channel != voice_channel:
             await vc.move_to(voice_channel)
+            await asyncio.sleep(1)
 
-        # Stop any currently playing audio
         if vc.is_playing():
             vc.stop()
 
         loop = asyncio.get_running_loop()
         done_event = asyncio.Event()
+        playback_error = [None]
 
         def after_play(error):
+            playback_error[0] = error
             if error:
                 logger.error(f"Playback error: {error}")
             loop.call_soon_threadsafe(done_event.set)
@@ -559,6 +562,14 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         )
 
         await done_event.wait()
+
+        if playback_error[0]:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"Playback failed: `{playback_error[0]}`",
+                    color=0xED4245,
+                )
+            )
 
         try:
             os.remove(clip_path)
