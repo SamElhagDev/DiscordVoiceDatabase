@@ -18,12 +18,14 @@ import discord
 import discord.opus as opus_mod
 from discord.ext import voice_recv
 
+logger = logging.getLogger("discord_bot")
+
 try:
     import davey as _davey
+    logger.info(f"davey loaded: {_davey}")
 except ImportError:
     _davey = None
-
-logger = logging.getLogger("discord_bot")
+    logger.warning("davey not installed — DAVE E2EE decryption unavailable")
 
 # PCM settings from discord.py voice receive: 48kHz, stereo, 16-bit signed LE
 SAMPLE_RATE = 48000
@@ -102,13 +104,16 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                 if dave_session.can_passthrough(user.id):
                     pass  # DAVE transition window: packets are plain Opus
                 elif dave_session.ready:
+                    if _davey is None:
+                        logger.warning("DAVE session is active but davey is not installed — cannot decrypt audio")
+                        return
                     try:
                         opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
                     except Exception as e:
                         logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
                         return
                 else:
-                    # DAVE active but MLS group not yet established — skip to avoid garbage PCM
+                    logger.debug(f"DAVE session not ready yet for user {user.id}, dropping packet")
                     return
 
         decoder = self._decoders.get(user.id)
