@@ -57,11 +57,14 @@ class UserStream:
 
     def flush_to_disk(self) -> str:
         """Write buffer to PCM file and return the path."""
-        if self.buffer.tell() == 0:
+        buf_size = self.buffer.tell()
+        if buf_size == 0:
             return None
         self.buffer.seek(0)
+        data = self.buffer.read()
         with open(self.pcm_path, "wb") as f:
-            f.write(self.buffer.read())
+            f.write(data)
+        logger.info(f"flush_to_disk: user={self.user_id} buffer={buf_size} bytes written → {self.pcm_path}")
         return self.pcm_path
 
     @property
@@ -95,25 +98,31 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
         opus_bytes = data.opus
         if not opus_bytes:
+            logger.warning(f"Packet from {user.id} had no opus bytes")
             return
 
         # Silence/FEC-fill packets are internally generated — no DAVE layer.
         if not isinstance(data.packet, (SilencePacket, FakePacket)):
             dave_session = self._get_dave_session()
+            logger.info(f"Packet from {user.id}: dave_session={dave_session}, type={type(dave_session).__name__}")
             if dave_session is not None:
+                logger.info(f"DAVE: can_passthrough={dave_session.can_passthrough(user.id)}, ready={dave_session.ready}")
                 if dave_session.can_passthrough(user.id):
                     pass  # DAVE transition window: packets are plain Opus
                 elif dave_session.ready:
                     if _davey is None:
-                        logger.warning("DAVE session is active but davey is not installed — cannot decrypt audio")
+                        logger.warning("DAVE session active but davey not installed — dropping packet")
                         return
                     try:
                         opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
+                        if not opus_bytes:
+                            logger.warning(f"DAVE decrypt returned empty bytes for user {user.id}")
+                            return
                     except Exception as e:
-                        logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+                        logger.warning(f"DAVE decrypt failed for user {user.id}: {e}")
                         return
                 else:
-                    logger.debug(f"DAVE session not ready yet for user {user.id}, dropping packet")
+                    logger.warning(f"DAVE session not ready for user {user.id}, dropping packet")
                     return
 
         decoder = self._decoders.get(user.id)
@@ -124,15 +133,18 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         try:
             pcm = decoder.decode(opus_bytes, fec=False)
         except Exception as e:
-            logger.debug(f"Opus decode failed for user {user.id}: {e}")
+            logger.warning(f"Opus decode failed for user {user.id}: {e}")
             return
 
+        logger.info(f"PCM decoded for user {user.id}: {len(pcm)} bytes — calling callback")
         self._callback(user, pcm)
 
     def _get_dave_session(self):
         vc = self._voice_client
         conn = getattr(vc, "_connection", None) if vc else None
-        return getattr(conn, "dave_session", None) if conn else None
+        dave = getattr(conn, "dave_session", None) if conn else None
+        logger.info(f"_get_dave_session: vc={type(vc).__name__}, conn={type(conn).__name__ if conn else None}, dave={dave}")
+        return dave
 
     def cleanup(self):
         self._decoders.clear()
@@ -226,7 +238,9 @@ class VoiceRecorder:
 
     def on_audio_packet(self, user: discord.User, data: bytes):
         if user.id not in self.consented_users:
+            logger.warning(f"on_audio_packet: user {user.id} not consented (consented={self.consented_users}), dropping")
             return
+        logger.info(f"on_audio_packet: writing {len(data)} bytes for user {user.id}")
 
         with self._streams_lock:
             stream = self.user_streams.get(user.id)
@@ -281,10 +295,12 @@ class VoiceRecorder:
                 )
 
         if pcm_path is None:
+            logger.warning(f"_rotate_user: flush_to_disk returned None for user {user_id} (buffer was empty at flush time)")
             return
 
         end_ts = time.time()
         file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
+        logger.info(f"PCM flushed: user={user_id} path={pcm_path} size={file_size} bytes")
 
         segment_id = await self.db.add_segment(
             guild_id=guild_id,
@@ -297,8 +313,8 @@ class VoiceRecorder:
 
         await self._remux_queue.put((pcm_path, ogg_path, segment_id))
 
-        logger.debug(
-            f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
+        logger.info(
+            f"Segment queued for remux: user={user_id} duration={elapsed:.1f}s pcm_size={file_size}"
         )
 
     async def _remux_worker(self):
@@ -334,6 +350,7 @@ class VoiceRecorder:
             "-application", "voip",
             ogg_path,
         ]
+        logger.info(f"Remuxing {pcm_path} → {ogg_path} ({os.path.getsize(pcm_path)} bytes PCM)")
         result = subprocess.run(
             cmd, capture_output=True, timeout=60
         )
@@ -341,3 +358,5 @@ class VoiceRecorder:
             raise RuntimeError(
                 f"ffmpeg failed ({result.returncode}): {result.stderr.decode(errors='replace')}"
             )
+        ogg_size = os.path.getsize(ogg_path) if os.path.exists(ogg_path) else 0
+        logger.info(f"Remux complete: {ogg_path} ({ogg_size} bytes OGG)")
