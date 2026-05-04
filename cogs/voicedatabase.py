@@ -423,7 +423,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         lines = []
         for seg in segments:
-            # seg: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path)
             seg_start_ts = int(seg[4])
             if seg[5] is not None:
                 seg_end_ts = int(seg[5])
@@ -433,33 +432,33 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             else:
                 lines.append(f"<t:{seg_start_ts}:t> → ongoing")
 
-        # Split lines into pages that fit within Discord's 4096-char embed limit
-        pages = []
-        current_lines = []
-        current_len = 0
-        for line in lines:
-            # +1 for the newline between lines
-            if current_len + len(line) + 1 > 4096 and current_lines:
-                pages.append(current_lines)
-                current_lines = []
-                current_len = 0
-            current_lines.append(line)
-            current_len += len(line) + 1
-        if current_lines:
-            pages.append(current_lines)
+        description = "\n".join(lines[:25])
+        embed = discord.Embed(
+            title=f"Recordings for {user.display_name} on {date}",
+            description=description,
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"{len(segments)} segment(s) • Select one below to play it")
 
-        for i, page_lines in enumerate(pages):
-            title = f"Recordings for {user.display_name} on {date}"
-            if len(pages) > 1:
-                title += f" ({i + 1}/{len(pages)})"
-            embed = discord.Embed(
-                title=title,
-                description="\n".join(page_lines),
-                color=0x5865F2,
-            )
-            if i == len(pages) - 1:
-                embed.set_footer(text=f"{len(segments)} segment(s) • Use /clip to retrieve audio")
-            await context.send(embed=embed)
+        options = []
+        for seg in segments[:25]:
+            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
+            label = start_dt.strftime("%I:%M:%S %p")
+            if seg[5] is not None:
+                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
+                dur = int(seg[5] - seg[4])
+                desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
+            else:
+                desc = "→ ongoing"
+            options.append(discord.SelectOption(
+                label=label, description=desc, value=str(int(seg[4])),
+            ))
+
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, options=options,
+        )
+        await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="playclip",
@@ -782,6 +781,123 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             logger.info(
                 f"Auto-stopped recording in {member.guild.name} — no consented users remain"
             )
+
+
+class _ClipSelectView(discord.ui.View):
+    def __init__(self, cog, segments, target_user, invoker_id, options):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.segments = segments
+        self.target_user = target_user
+        self.invoker_id = invoker_id
+
+        select = discord.ui.Select(placeholder="Pick a segment to play...", options=options)
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can use this menu.", ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        selected_ts = int(interaction.data["values"][0])
+        seg = next((s for s in self.segments if int(s[4]) == selected_ts), None)
+        if seg is None:
+            await interaction.response.send_message("Segment not found.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        guild = interaction.guild
+        member = guild.get_member(interaction.user.id)
+        voice_channel = None
+        if member and member.voice and member.voice.channel:
+            voice_channel = member.voice.channel
+        elif guild.id in self.cog.recorders:
+            voice_channel = self.cog.recorders[guild.id].channel
+
+        if voice_channel is None:
+            await interaction.followup.send(
+                embed=discord.Embed(description="Join a voice channel first.", color=0xED4245),
+                ephemeral=True,
+            )
+            return
+
+        if seg[5] is not None:
+            duration_minutes = max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0))
+        else:
+            duration_minutes = 1
+
+        start_time = datetime.fromtimestamp(seg[4], tz=EST)
+
+        clip_path = await self.cog.retriever.retrieve_clip(
+            user_id=self.target_user.id,
+            start_time=start_time,
+            duration_minutes=duration_minutes,
+            guild_id=guild.id,
+        )
+
+        if clip_path is None:
+            await interaction.followup.send(
+                embed=discord.Embed(description="No audio found for that segment.", color=0xFEE75C),
+                ephemeral=True,
+            )
+            return
+
+        joined_for_playback = False
+        vc = guild.voice_client
+        if vc is None or not vc.is_connected():
+            try:
+                vc = await voice_channel.connect()
+                joined_for_playback = True
+            except Exception as e:
+                await interaction.followup.send(
+                    embed=discord.Embed(description=f"Failed to connect: {e}", color=0xED4245),
+                    ephemeral=True,
+                )
+                try:
+                    os.remove(clip_path)
+                except OSError:
+                    pass
+                return
+        elif vc.channel != voice_channel:
+            await vc.move_to(voice_channel)
+
+        if vc.is_playing():
+            vc.stop()
+
+        loop = asyncio.get_running_loop()
+        done_event = asyncio.Event()
+
+        def after_play(error):
+            if error:
+                logger.error(f"Playback error: {error}")
+            loop.call_soon_threadsafe(done_event.set)
+
+        source = discord.FFmpegOpusAudio(clip_path)
+        vc.play(source, after=after_play)
+
+        start_str = start_time.strftime("%I:%M %p")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                description=f"Playing segment for {self.target_user.mention} ({start_str}, {duration_minutes} min).",
+                color=0x57F287,
+            )
+        )
+
+        await done_event.wait()
+
+        try:
+            os.remove(clip_path)
+        except OSError:
+            pass
+
+        if joined_for_playback:
+            await vc.disconnect()
 
 
 async def setup(bot) -> None:
