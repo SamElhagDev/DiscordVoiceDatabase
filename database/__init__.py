@@ -108,7 +108,7 @@ class DatabaseManager:
         """Find all segments that overlap the requested time window."""
         if guild_id:
             rows = await self.connection.execute(
-                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size
                    FROM segments
                    WHERE user_id=? AND guild_id=?
                      AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
@@ -117,7 +117,7 @@ class DatabaseManager:
             )
         else:
             rows = await self.connection.execute(
-                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size
                    FROM segments
                    WHERE user_id=? AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
                    ORDER BY start_ts ASC""",

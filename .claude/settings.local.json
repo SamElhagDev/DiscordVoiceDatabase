@@ -11,7 +11,8 @@
       "Bash(ffmpeg -i \"/c/Users/Sam Elhag.EREF/source/repos/DiscordVoiceDatabase/recordings/802852529988960296/241674282155900929/1777760140289.ogg\" -map 0:a -c:a copy -f opus -ar 48000 -ac 2 pipe:1)",
       "Bash(ffmpeg -y -i \"/c/Users/Sam Elhag.EREF/source/repos/DiscordVoiceDatabase/recordings/802852529988960296/241674282155900929/1777760140289.ogg\" -ss 0 -t 60 -c:a libopus -b:a 48k \"/c/Users/Sam Elhag.EREF/source/repos/DiscordVoiceDatabase/clips/test_clip.ogg\")",
       "Bash(ffmpeg -i \"/c/Users/Sam Elhag.EREF/source/repos/DiscordVoiceDatabase/clips/test_clip.ogg\" -map 0:a -f opus -ar 48000 -ac 2 pipe:1)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
