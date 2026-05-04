@@ -9,7 +9,9 @@ A background task remuxes raw PCM files to OGG/Opus for storage efficiency.
 import asyncio
 import io
 import logging
+import math
 import os
+import struct
 import subprocess
 import threading
 import time
@@ -31,6 +33,20 @@ CHANNELS = 2
 SAMPLE_WIDTH = 2  # 16-bit
 BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
 
+# Voice Activity Detection settings
+VAD_RMS_THRESHOLD = 300  # RMS amplitude below this is considered silence
+VAD_HANGOVER_FRAMES = 25  # keep recording for ~500ms after speech stops (20ms frames)
+
+
+def _rms(pcm_data: bytes) -> float:
+    """Calculate RMS amplitude of 16-bit signed LE PCM data."""
+    n_samples = len(pcm_data) // SAMPLE_WIDTH
+    if n_samples == 0:
+        return 0.0
+    samples = struct.unpack(f"<{n_samples}h", pcm_data[:n_samples * SAMPLE_WIDTH])
+    sum_sq = sum(s * s for s in samples)
+    return math.sqrt(sum_sq / n_samples)
+
 
 class UserStream:
     """Tracks a single user's current recording segment."""
@@ -42,6 +58,7 @@ class UserStream:
         self.start_ts = time.time()
         self.buffer = io.BytesIO()
         self.segment_db_id = None
+        self._hangover = 0
 
         # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
@@ -51,7 +68,13 @@ class UserStream:
         self.ogg_path = os.path.join(self.directory, f"{ts_ms}.ogg")
 
     def write(self, data: bytes):
-        self.buffer.write(data)
+        rms = _rms(data)
+        if rms >= VAD_RMS_THRESHOLD:
+            self._hangover = VAD_HANGOVER_FRAMES
+            self.buffer.write(data)
+        elif self._hangover > 0:
+            self._hangover -= 1
+            self.buffer.write(data)
 
     def flush_to_disk(self) -> str:
         """Write buffer to PCM file and return the path."""
