@@ -421,43 +421,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        lines = []
-        for seg in segments:
-            seg_start_ts = int(seg[4])
-            if seg[5] is not None:
-                seg_end_ts = int(seg[5])
-                duration_sec = int(seg[5] - seg[4])
-                duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
-                lines.append(f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})")
-            else:
-                lines.append(f"<t:{seg_start_ts}:t> → ongoing")
-
-        description = "\n".join(lines[:25])
-        embed = discord.Embed(
-            title=f"Recordings for {user.display_name} on {date}",
-            description=description,
-            color=0x5865F2,
-        )
-        embed.set_footer(text=f"{len(segments)} segment(s) • Select one below to play it")
-
-        options = []
-        for seg in segments[:25]:
-            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
-            label = start_dt.strftime("%I:%M:%S %p")
-            if seg[5] is not None:
-                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
-                dur = int(seg[5] - seg[4])
-                desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
-            else:
-                desc = "→ ongoing"
-            options.append(discord.SelectOption(
-                label=label, description=desc, value=str(int(seg[4])),
-            ))
-
         view = _ClipSelectView(
             cog=self, segments=segments, target_user=user,
-            invoker_id=context.author.id, options=options,
+            invoker_id=context.author.id, date=date,
         )
+        embed = view.build_embed()
         await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
@@ -784,16 +752,80 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
 
 class _ClipSelectView(discord.ui.View):
-    def __init__(self, cog, segments, target_user, invoker_id, options):
+    def __init__(self, cog, segments, target_user, invoker_id, date):
         super().__init__(timeout=120)
         self.cog = cog
         self.segments = segments
         self.target_user = target_user
         self.invoker_id = invoker_id
+        self.date = date
+        self.page = 0
+        self.per_page = 25
+        self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
+        self._rebuild_items()
 
+    def _page_segments(self):
+        start = self.page * self.per_page
+        return self.segments[start:start + self.per_page]
+
+    def _rebuild_items(self):
+        self.clear_items()
+        options = []
+        for seg in self._page_segments():
+            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
+            label = start_dt.strftime("%I:%M:%S %p")
+            if seg[5] is not None:
+                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
+                dur = int(seg[5] - seg[4])
+                desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
+            else:
+                desc = "→ ongoing"
+            options.append(discord.SelectOption(
+                label=label, description=desc, value=str(int(seg[4])),
+            ))
         select = discord.ui.Select(placeholder="Pick a segment to play...", options=options)
         select.callback = self.on_select
         self.add_item(select)
+
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            page_btn = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.primary, disabled=True)
+            self.add_item(page_btn)
+
+            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+    def build_embed(self):
+        lines = []
+        for seg in self._page_segments():
+            seg_start_ts = int(seg[4])
+            if seg[5] is not None:
+                seg_end_ts = int(seg[5])
+                duration_sec = int(seg[5] - seg[4])
+                duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
+                lines.append(f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})")
+            else:
+                lines.append(f"<t:{seg_start_ts}:t> → ongoing")
+        title = f"Recordings for {self.target_user.display_name} on {self.date}"
+        if self.total_pages > 1:
+            title += f" ({self.page + 1}/{self.total_pages})"
+        embed = discord.Embed(title=title, description="\n".join(lines), color=0x5865F2)
+        embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to play it")
+        return embed
+
+    async def _prev_page(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
