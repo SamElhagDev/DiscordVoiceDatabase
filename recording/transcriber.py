@@ -47,9 +47,9 @@ class Transcriber:
                     if not os.path.exists(ogg_path):
                         continue
                     transcript = await asyncio.to_thread(self._transcribe, ogg_path)
-                    if transcript:
-                        await self.db.set_segment_transcript(segment_id, transcript)
-                        logger.debug(f"Transcribed segment {segment_id}: {transcript[:80]}")
+                    result = transcript.strip() if transcript and transcript.strip() else "Blank"
+                    await self.db.set_segment_transcript(segment_id, result)
+                    logger.debug(f"Transcribed segment {segment_id}: {result[:80]}")
                 except Exception as e:
                     logger.error(f"Transcription failed for segment {segment_id}: {e}")
                 finally:

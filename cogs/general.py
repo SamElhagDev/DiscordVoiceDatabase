@@ -11,22 +11,55 @@ class General(commands.Cog, name="general"):
         name="help", description="List all commands the bot has loaded."
     )
     async def help(self, context: Context) -> None:
+        prefix = self.bot.bot_prefix
+
+        SECTION_ICONS = {
+            "general":       "🔧",
+            "voicedatabase": "🎙️",
+            "owner":         "👑",
+        }
+
+        COMMAND_ICONS = {
+            "join":        "✅",
+            "leave":       "🚫",
+            "participants":"👥",
+            "record":      "⏺️",
+            "stoprecord":  "⏹️",
+            "listclips":   "📋",
+            "playclip":    "▶️",
+            "transcribe":  "📝",
+            "help":        "❓",
+            "ping":        "🏓",
+        }
+
         embed = discord.Embed(
-            title="Help", description="List of available commands:", color=0xBEBEFE
+            title="📖  Voice Database — Command Reference",
+            description=f"Use `{prefix}<command>` or `/<command>` for any command below.",
+            color=0x5865F2,
         )
-        for i in self.bot.cogs:
-            if i == "owner" and not (await self.bot.is_owner(context.author)):
+
+        for cog_name in self.bot.cogs:
+            if cog_name == "owner" and not (await self.bot.is_owner(context.author)):
                 continue
-            cog = self.bot.get_cog(i.lower())
-            commands = cog.get_commands()
-            data = []
-            for command in commands:
-                description = command.description.partition("\n")[0]
-                data.append(f"{command.name} - {description}")
-            help_text = "\n".join(data)
+            cog = self.bot.get_cog(cog_name.lower())
+            cog_commands = cog.get_commands()
+            if not cog_commands:
+                continue
+
+            lines = []
+            for cmd in cog_commands:
+                icon = COMMAND_ICONS.get(cmd.name, "•")
+                desc = cmd.description.partition("\n")[0]
+                lines.append(f"{icon} **`{prefix}{cmd.name}`** — {desc}")
+
+            section_icon = SECTION_ICONS.get(cog_name.lower(), "📂")
             embed.add_field(
-                name=i.capitalize(), value=f"```{help_text}```", inline=False
+                name=f"{section_icon}  {cog_name.capitalize()}",
+                value="\n".join(lines),
+                inline=False,
             )
+
+        embed.set_footer(text="Slash commands are also supported for all commands above.")
         await context.send(embed=embed)
 
     @commands.hybrid_command(

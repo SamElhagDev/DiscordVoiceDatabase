@@ -395,18 +395,40 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         segments = await self.bot.database.get_untranscribed_segments(guild_id=context.guild.id)
-        if not segments:
+        valid = [(seg_id, fp) for seg_id, fp in segments if fp and os.path.exists(fp)]
+        if not valid:
             await context.send(embed=discord.Embed(description="No untranscribed segments found.", color=0xFEE75C))
             return
 
-        queued = 0
-        for seg_id, file_path in segments:
-            if file_path and os.path.exists(file_path):
-                await self.transcriber.enqueue(file_path, seg_id)
-                queued += 1
+        total = len(valid)
+        progress_msg = await context.send(embed=discord.Embed(
+            title="📝 Transcribing...",
+            description=f"**0 / {total}** complete",
+            color=0x5865F2,
+        ))
 
-        await context.send(embed=discord.Embed(
-            description=f"Queued **{queued}** segment(s) for transcription. Results will appear in `/listclips` as they complete.",
+        done = 0
+        for seg_id, file_path in valid:
+            try:
+                transcript = await asyncio.to_thread(self.transcriber._transcribe, file_path)
+            except Exception as e:
+                logger.error(f"Backfill transcription failed for segment {seg_id}: {e}")
+                transcript = ""
+
+            result = transcript.strip() if transcript and transcript.strip() else "Blank"
+            await self.bot.database.set_segment_transcript(seg_id, result)
+            done += 1
+
+            preview = result[:120] + ("..." if len(result) > 120 else "")
+            await progress_msg.edit(embed=discord.Embed(
+                title="📝 Transcribing...",
+                description=f"**{done} / {total}** complete\n\n`Segment {seg_id}` — *{preview}*",
+                color=0x5865F2,
+            ))
+
+        await progress_msg.edit(embed=discord.Embed(
+            title="✅ Transcription Complete",
+            description=f"Processed **{done}** segment(s).",
             color=0x57F287,
         ))
 
@@ -1016,14 +1038,14 @@ class _ClipSelectView(discord.ui.View):
             title += f" (Page {self.page + 1}/{self.total_pages})"
         embed = discord.Embed(title=title, color=0x5865F2)
         for seg in self._page_segments():
-            seg_start_ts = int(seg[4])
+            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
             if seg[5] is not None:
-                seg_end_ts = int(seg[5])
+                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
                 duration_sec = int(seg[5] - seg[4])
                 duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
-                field_name = f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t>  ({duration_str})"
+                field_name = f"{start_dt.strftime('%I:%M:%S %p')} → {end_dt.strftime('%I:%M:%S %p')}  ({duration_str})"
             else:
-                field_name = f"<t:{seg_start_ts}:t> → ongoing"
+                field_name = f"{start_dt.strftime('%I:%M:%S %p')} → ongoing"
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
             field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
             embed.add_field(name=field_name, value=field_value, inline=False)
