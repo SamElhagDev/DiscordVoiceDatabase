@@ -11,6 +11,9 @@ A Discord bot that records voice channel audio on a per-user, consent-based basi
 - **Interactive browsing** — `/listclips` shows a paginated dropdown of all segments for a user on a given day. Select one to play it in VC with configurable duration and offset.
 - **Auto-join** — Configure a primary channel and the bot will automatically rejoin and resume recording when members are present.
 - **DAVE E2EE support** — Handles Discord's end-to-end encrypted voice channels via the `davey` library.
+- **Speech-to-text transcription** — Segments are automatically transcribed using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) after recording. Transcripts appear in the clip browser dropdown and embed.
+- **Backfill transcription** — `/transcribe` lets admins queue transcription for all past recordings that haven't been processed yet, with live progress updates.
+- **Smart filtering** — Silent segments are filtered out via both a bytes-per-second threshold and blank transcript detection, keeping the clip browser clean.
 - **Automatic cleanup** — Old recordings are purged based on a configurable retention policy (default 7 days).
 - **Docker support** — Run with `docker compose up` for easy deployment.
 
@@ -50,6 +53,7 @@ DB_PATH=./data/database.db
 RECORDINGS_PATH=./recordings
 CLIPS_PATH=./clips
 RETENTION_DAYS=7
+WHISPER_MODEL=base          # Whisper model size: tiny, base, small, medium, large-v3
 ```
 
 ### 3. Run the bot
@@ -92,6 +96,12 @@ Recordings and database are persisted via Docker volumes.
 | `/listclips @user 2026-05-03` | Browse all segments for a user on a given day with an interactive dropdown. Select a segment to play it in VC. |
 | `/playclip @user 2026-05-03T14:00:00 10` | Play a clip directly in your current voice channel |
 
+### Transcription
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/transcribe` | Backfill transcriptions for all past recordings that have none. Shows live progress. | Manage Server |
+
 ### Settings
 
 | Command | Description | Permission |
@@ -121,6 +131,7 @@ DiscordVoiceDatabase/
 ├── recording/
 │   ├── recorder.py         # VoiceRecorder, per-user PCM capture with VAD
 │   ├── retriever.py        # ClipRetriever, segment stitching via FFmpeg
+│   ├── transcriber.py      # Background Whisper transcription worker
 │   └── cleanup.py          # Automatic old recording purge
 ├── docker-compose.yml
 ├── Dockerfile
@@ -134,12 +145,13 @@ DiscordVoiceDatabase/
 3. Each user's audio is captured as raw PCM (48kHz, stereo, 16-bit)
 4. A voice activity detector filters out silence — only frames with speech are written
 5. Every 60 seconds, the buffered PCM is flushed to disk and remuxed to OGG/Opus in the background
-6. Segment metadata (timestamps, file paths) is stored in SQLite for fast lookup
-7. A cleanup task runs hourly, deleting segments older than the retention period
+6. After remux, the OGG is queued for transcription via faster-whisper (runs in a background thread, never blocks the event loop)
+7. Segment metadata (timestamps, file paths, transcripts) is stored in SQLite for fast lookup
+8. A cleanup task runs hourly, deleting segments older than the retention period
 
 ### How playback works
 
-1. `/listclips` queries segments by user and date, presents them in a paginated dropdown
+1. `/listclips` queries segments by user and date, filters out silent/blank segments, and presents them in a paginated dropdown with transcript previews
 2. Selecting a segment opens a modal to configure duration and start offset
 3. The bot retrieves the clip via FFmpeg (trimming/concatenating segments as needed)
 4. The OGG/Opus file is streamed to the voice channel via `FFmpegOpusAudio`

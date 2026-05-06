@@ -28,6 +28,7 @@ class General(commands.Cog, name="general"):
             "listclips":   "📋",
             "playclip":    "▶️",
             "transcribe":  "📝",
+            "stop":        "⏹️",
             "help":        "❓",
             "ping":        "🏓",
         }

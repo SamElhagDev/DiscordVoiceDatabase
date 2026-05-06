@@ -79,7 +79,7 @@ class ClipRetriever:
             # Single segment — just trim it
             seg = valid_segments[0]
             seg_start_ts = seg[4]
-            trim_start = max(0, start_ts - seg_start_ts)
+            trim_start = round(max(0.0, start_ts - seg_start_ts), 3)
             trim_duration = duration_minutes * 60
 
             await asyncio.to_thread(
@@ -88,7 +88,7 @@ class ClipRetriever:
         else:
             # Multiple segments — concat then trim
             first_seg_start = valid_segments[0][4]
-            trim_start = max(0, start_ts - first_seg_start)
+            trim_start = round(max(0.0, start_ts - first_seg_start), 3)
             trim_duration = duration_minutes * 60
 
             file_list = [seg[6] for seg in valid_segments]

@@ -475,6 +475,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         MIN_BYTES_PER_SEC = 500
         segments = []
         for seg in all_segments:
+            transcript = seg[8] if len(seg) > 8 else None
+            if transcript == "Blank":
+                continue
             file_size = seg[7] or 0
             duration = (seg[5] - seg[4]) if seg[5] is not None else 0
             if duration > 0 and file_size / duration >= MIN_BYTES_PER_SEC:
@@ -649,6 +652,29 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         if joined_for_playback:
             await vc.disconnect()
 
+    @commands.hybrid_command(
+        name="stop",
+        description="Stop the currently playing clip.",
+    )
+    async def stop_playback(self, context: Context) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        vc = context.guild.voice_client
+        if vc is None or not vc.is_playing():
+            await context.send(embed=discord.Embed(
+                description="Nothing is currently playing.",
+                color=0xFEE75C,
+            ))
+            return
+
+        vc.stop()
+        await context.send(embed=discord.Embed(
+            description="Playback stopped.",
+            color=0x57F287,
+        ))
+
     # ── Settings commands ───────────────────────────────────────────────
 
     @commands.hybrid_command(
@@ -751,38 +777,44 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     @tasks.loop(minutes=2.0)
     async def auto_rejoin_loop(self):
         """
-        Periodically check if the bot should auto-join a primary channel.
-        If a primary channel is set, consented users are present,
-        and we're not already recording, auto-start.
+        Periodically check if the bot should auto-join a voice channel.
+        Scans all voice channels, requires at least 2 non-bot members,
+        and picks the channel with the most people.
         """
         for guild in self.bot.guilds:
             if guild.id in self.recorders:
-                continue  # already recording
+                continue
 
             settings = await self.bot.database.get_settings(guild.id)
-            if not settings["enabled"] or not settings["primary_channel_id"]:
+            if not settings["enabled"]:
                 continue
 
-            channel = guild.get_channel(settings["primary_channel_id"])
-            if channel is None:
-                continue
-
-            # Check if any consented users are in the channel
             consented = await self.bot.database.get_consented_user_ids(guild.id)
-            members_in_channel = {m.id for m in channel.members if not m.bot}
-            active_consented = consented & members_in_channel
 
-            if not active_consented:
+            best_channel = None
+            best_count = 0
+            for channel in guild.voice_channels:
+                members_in_channel = [m for m in channel.members if not m.bot]
+                if len(members_in_channel) < 2:
+                    continue
+                active_consented = consented & {m.id for m in members_in_channel}
+                if not active_consented:
+                    continue
+                if len(members_in_channel) > best_count:
+                    best_count = len(members_in_channel)
+                    best_channel = channel
+
+            if best_channel is None:
                 continue
 
             try:
-                vc = await self._connect_voice(channel)
+                vc = await self._connect_voice(best_channel)
                 if vc is None:
                     continue
                 recorder = VoiceRecorder(
                     bot=self.bot,
                     guild=guild,
-                    channel=channel,
+                    channel=best_channel,
                     database=self.bot.database,
                     recordings_path=RECORDINGS_PATH,
                     segment_duration_sec=settings["segment_duration_sec"],
@@ -791,7 +823,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 await recorder.start(vc)
                 self.recorders[guild.id] = recorder
                 logger.info(
-                    f"Auto-joined {guild.name} / #{channel.name} ({len(active_consented)} consented users present)"
+                    f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
                 )
             except Exception as e:
                 logger.error(f"Auto-join failed for {guild.name}: {e}")
