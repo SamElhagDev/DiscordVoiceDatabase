@@ -382,6 +382,35 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             pass
 
     @commands.hybrid_command(
+        name="transcribe",
+        description="Backfill transcriptions for all past recordings that have none.",
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def transcribe_past(self, context: Context) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+        if not self.transcriber:
+            await context.send(embed=discord.Embed(description="Transcription service is not running.", color=0xED4245))
+            return
+
+        segments = await self.bot.database.get_untranscribed_segments(guild_id=context.guild.id)
+        if not segments:
+            await context.send(embed=discord.Embed(description="No untranscribed segments found.", color=0xFEE75C))
+            return
+
+        queued = 0
+        for seg_id, file_path in segments:
+            if file_path and os.path.exists(file_path):
+                await self.transcriber.enqueue(file_path, seg_id)
+                queued += 1
+
+        await context.send(embed=discord.Embed(
+            description=f"Queued **{queued}** segment(s) for transcription. Results will appear in `/listclips` as they complete.",
+            color=0x57F287,
+        ))
+
+    @commands.hybrid_command(
         name="listclips",
         description="List all recorded segments for a user on a given day.",
     )
@@ -937,7 +966,7 @@ class _ClipSelectView(discord.ui.View):
         self.invoker_id = invoker_id
         self.date = date
         self.page = 0
-        self.per_page = 25
+        self.per_page = 10
         self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
         self._rebuild_items()
 
@@ -982,26 +1011,22 @@ class _ClipSelectView(discord.ui.View):
             self.add_item(next_btn)
 
     def build_embed(self):
-        lines = []
+        title = f"Recordings for {self.target_user.display_name} on {self.date}"
+        if self.total_pages > 1:
+            title += f" (Page {self.page + 1}/{self.total_pages})"
+        embed = discord.Embed(title=title, color=0x5865F2)
         for seg in self._page_segments():
             seg_start_ts = int(seg[4])
             if seg[5] is not None:
                 seg_end_ts = int(seg[5])
                 duration_sec = int(seg[5] - seg[4])
                 duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
-                time_line = f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})"
+                field_name = f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t>  ({duration_str})"
             else:
-                time_line = f"<t:{seg_start_ts}:t> → ongoing"
+                field_name = f"<t:{seg_start_ts}:t> → ongoing"
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
-            if transcript:
-                preview = transcript[:120] + ("..." if len(transcript) > 120 else "")
-                lines.append(f"{time_line}\n> *{preview}*")
-            else:
-                lines.append(time_line)
-        title = f"Recordings for {self.target_user.display_name} on {self.date}"
-        if self.total_pages > 1:
-            title += f" ({self.page + 1}/{self.total_pages})"
-        embed = discord.Embed(title=title, description="\n".join(lines), color=0x5865F2)
+            field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
+            embed.add_field(name=field_name, value=field_value, inline=False)
         embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to play it")
         return embed
 

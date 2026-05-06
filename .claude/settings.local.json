@@ -15,7 +15,11 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(ffmpeg -i \"Z:\\\\apps\\\\DiscordVoiceDatabase\\\\recordings\\\\1048061121854181507\\\\241674282155900929\\\\1777871303082.ogg\" -af silencedetect=noise=-30dB:d=0.5 -f null -)",
       "Bash(python -c ' *)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bot.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(pip show *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/transcriber.py'\\).read\\(\\)\\); ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('All files parse OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

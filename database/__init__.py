@@ -205,3 +205,22 @@ class DatabaseManager:
         async with rows as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
+
+    async def get_untranscribed_segments(self, guild_id: int = None) -> list:
+        """Return all completed segments that have no transcript yet."""
+        if guild_id:
+            rows = await self.connection.execute(
+                """SELECT id, file_path FROM segments
+                   WHERE end_ts IS NOT NULL AND (transcript IS NULL OR transcript = '')
+                   AND guild_id=?
+                   ORDER BY start_ts ASC""",
+                (guild_id,),
+            )
+        else:
+            rows = await self.connection.execute(
+                """SELECT id, file_path FROM segments
+                   WHERE end_ts IS NOT NULL AND (transcript IS NULL OR transcript = '')
+                   ORDER BY start_ts ASC""",
+            )
+        async with rows as cursor:
+            return await cursor.fetchall()
