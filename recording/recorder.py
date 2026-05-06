@@ -39,7 +39,7 @@ SAMPLE_WIDTH = 2  # 16-bit
 BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
 
 # Voice Activity Detection settings
-VAD_RMS_THRESHOLD = 300  # RMS amplitude below this is considered silence
+VAD_RMS_THRESHOLD = 150  # RMS amplitude below this is considered silence
 VAD_HANGOVER_FRAMES = 25  # keep recording for ~500ms after speech stops (20ms frames)
 
 

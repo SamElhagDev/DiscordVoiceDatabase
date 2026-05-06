@@ -470,20 +470,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             guild_id=context.guild.id,
         )
 
-        # Filter out mostly-silent segments by checking bytes-per-second.
-        # seg tuple: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size)
-        MIN_BYTES_PER_SEC = 500
         segments = []
         for seg in all_segments:
             transcript = seg[8] if len(seg) > 8 else None
             if transcript == "Blank":
                 continue
-            file_size = seg[7] or 0
-            duration = (seg[5] - seg[4]) if seg[5] is not None else 0
-            if duration > 0 and file_size / duration >= MIN_BYTES_PER_SEC:
-                segments.append(seg)
-            elif seg[5] is None:
-                segments.append(seg)
+            segments.append(seg)
 
         if not segments:
             await context.send(
