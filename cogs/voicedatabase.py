@@ -18,6 +18,7 @@ from discord.ext.commands import Context
 from recording.recorder import VoiceRecorder
 from recording.retriever import ClipRetriever
 from recording.cleanup import SegmentCleanup
+from recording.transcriber import Transcriber
 
 logger = logging.getLogger("discord_bot")
 
@@ -32,6 +33,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.recorders: dict[int, VoiceRecorder] = {}  # guild_id -> VoiceRecorder
         self.retriever = None
         self.cleanup = None
+        self.transcriber = None
 
     async def cog_load(self):
         """Called when the cog is loaded. Start cleanup task."""
@@ -39,6 +41,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.retriever = ClipRetriever(self.bot.database, output_path=CLIPS_PATH)
         self.cleanup = SegmentCleanup(self.bot.database, default_retention_days=RETENTION_DAYS)
         self.cleanup.start()
+        self.transcriber = Transcriber(self.bot.database)
+        self.transcriber.start()
         self.auto_rejoin_loop.start()
 
     async def cog_unload(self):
@@ -46,6 +50,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.auto_rejoin_loop.cancel()
         if self.cleanup:
             self.cleanup.stop()
+        if self.transcriber:
+            self.transcriber.stop()
         for guild_id in list(self.recorders.keys()):
             recorder = self.recorders.pop(guild_id, None)
             if recorder:
@@ -230,6 +236,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             database=self.bot.database,
             recordings_path=RECORDINGS_PATH,
             segment_duration_sec=settings["segment_duration_sec"],
+            transcriber=self.transcriber,
         )
         await recorder.start(vc)
         self.recorders[context.guild.id] = recorder
@@ -728,6 +735,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                     database=self.bot.database,
                     recordings_path=RECORDINGS_PATH,
                     segment_duration_sec=settings["segment_duration_sec"],
+                    transcriber=self.transcriber,
                 )
                 await recorder.start(vc)
                 self.recorders[guild.id] = recorder
@@ -946,9 +954,14 @@ class _ClipSelectView(discord.ui.View):
             if seg[5] is not None:
                 end_dt = datetime.fromtimestamp(seg[5], tz=EST)
                 dur = int(seg[5] - seg[4])
-                desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
+                time_desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
             else:
-                desc = "→ ongoing"
+                time_desc = "→ ongoing"
+            transcript = seg[8] if len(seg) > 8 and seg[8] else None
+            if transcript:
+                desc = transcript[:100]
+            else:
+                desc = time_desc
             options.append(discord.SelectOption(
                 label=label, description=desc, value=str(int(seg[4])),
             ))
@@ -976,9 +989,15 @@ class _ClipSelectView(discord.ui.View):
                 seg_end_ts = int(seg[5])
                 duration_sec = int(seg[5] - seg[4])
                 duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
-                lines.append(f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})")
+                time_line = f"<t:{seg_start_ts}:t> → <t:{seg_end_ts}:t> ({duration_str})"
             else:
-                lines.append(f"<t:{seg_start_ts}:t> → ongoing")
+                time_line = f"<t:{seg_start_ts}:t> → ongoing"
+            transcript = seg[8] if len(seg) > 8 and seg[8] else None
+            if transcript:
+                preview = transcript[:120] + ("..." if len(transcript) > 120 else "")
+                lines.append(f"{time_line}\n> *{preview}*")
+            else:
+                lines.append(time_line)
         title = f"Recordings for {self.target_user.display_name} on {self.date}"
         if self.total_pages > 1:
             title += f" ({self.page + 1}/{self.total_pages})"

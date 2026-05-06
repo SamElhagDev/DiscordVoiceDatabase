@@ -114,6 +114,17 @@ class DiscordBot(commands.Bot):
                 await db.executescript(file.read())
             await db.commit()
 
+            # Apply migrations (safe to re-run)
+            migrations = [
+                "ALTER TABLE segments ADD COLUMN transcript TEXT",
+            ]
+            for sql in migrations:
+                try:
+                    await db.execute(sql)
+                    await db.commit()
+                except Exception:
+                    pass
+
     async def load_cogs(self) -> None:
         for file in os.listdir(
             os.path.join(os.path.realpath(os.path.dirname(__file__)), "cogs")

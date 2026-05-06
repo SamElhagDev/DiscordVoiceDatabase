@@ -5,3 +5,4 @@ discord-ext-voice-recv
 davey
 python-dotenv
 PyNaCl
+faster-whisper

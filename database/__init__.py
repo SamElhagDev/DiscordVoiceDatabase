@@ -105,10 +105,12 @@ class DatabaseManager:
     async def get_segments_in_range(
         self, user_id: int, start_ts: float, end_ts: float, guild_id: int = None
     ) -> list:
-        """Find all segments that overlap the requested time window."""
+        """Find all segments that overlap the requested time window.
+        Returns tuples: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript)
+        """
         if guild_id:
             rows = await self.connection.execute(
-                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript
                    FROM segments
                    WHERE user_id=? AND guild_id=?
                      AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
@@ -117,7 +119,7 @@ class DatabaseManager:
             )
         else:
             rows = await self.connection.execute(
-                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript
                    FROM segments
                    WHERE user_id=? AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
                    ORDER BY start_ts ASC""",
@@ -185,3 +187,21 @@ class DatabaseManager:
             (guild_id, days),
         )
         await self.connection.commit()
+
+    # ── Transcription operations ───────────────────────────────────────
+
+    async def set_segment_transcript(self, segment_id: int, transcript: str):
+        await self.connection.execute(
+            "UPDATE segments SET transcript=? WHERE id=?",
+            (transcript, segment_id),
+        )
+        await self.connection.commit()
+
+    async def get_segment_transcript(self, segment_id: int) -> str | None:
+        rows = await self.connection.execute(
+            "SELECT transcript FROM segments WHERE id=?",
+            (segment_id,),
+        )
+        async with rows as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None

@@ -175,6 +175,7 @@ class VoiceRecorder:
         database,
         recordings_path: str = "recordings",
         segment_duration_sec: int = 60,
+        transcriber=None,
     ):
         self.bot = bot
         self.guild = guild
@@ -182,6 +183,7 @@ class VoiceRecorder:
         self.db = database
         self.recordings_path = recordings_path
         self.segment_duration_sec = segment_duration_sec
+        self.transcriber = transcriber
         self.user_streams: dict[int, UserStream] = {}
         self._streams_lock = threading.Lock()
         self.consented_users: set[int] = set()
@@ -330,6 +332,8 @@ class VoiceRecorder:
                     ogg_size = os.path.getsize(ogg_path) if os.path.exists(ogg_path) else 0
                     if ogg_size > 0:
                         await self.db.update_segment_file_size(segment_id, ogg_size)
+                        if self.transcriber:
+                            await self.transcriber.enqueue(ogg_path, segment_id)
                 except Exception as e:
                     logger.error(f"Remux failed for {pcm_path}: {e}")
                 finally:
