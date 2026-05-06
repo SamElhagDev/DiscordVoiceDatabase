@@ -206,6 +206,37 @@ class DatabaseManager:
             row = await cursor.fetchone()
             return row[0] if row else None
 
+    async def search_segments_by_transcript(
+        self, user_id: int, start_ts: float, end_ts: float, query: str, guild_id: int = None
+    ) -> list:
+        """Search segments whose transcript contains the query text.
+        Returns same tuple shape as get_segments_in_range.
+        """
+        like_param = f"%{query}%"
+        if guild_id:
+            rows = await self.connection.execute(
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript
+                   FROM segments
+                   WHERE user_id=? AND guild_id=?
+                     AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
+                     AND transcript IS NOT NULL AND transcript != '' AND transcript != 'Blank'
+                     AND transcript LIKE ? COLLATE NOCASE
+                   ORDER BY start_ts ASC""",
+                (user_id, guild_id, end_ts, start_ts, like_param),
+            )
+        else:
+            rows = await self.connection.execute(
+                """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript
+                   FROM segments
+                   WHERE user_id=? AND start_ts <= ? AND (end_ts >= ? OR end_ts IS NULL)
+                     AND transcript IS NOT NULL AND transcript != '' AND transcript != 'Blank'
+                     AND transcript LIKE ? COLLATE NOCASE
+                   ORDER BY start_ts ASC""",
+                (user_id, end_ts, start_ts, like_param),
+            )
+        async with rows as cursor:
+            return await cursor.fetchall()
+
     async def get_untranscribed_segments(self, guild_id: int = None) -> list:
         """Return all completed segments that have no transcript yet."""
         if guild_id:

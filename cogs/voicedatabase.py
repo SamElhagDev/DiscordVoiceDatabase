@@ -502,6 +502,64 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
+        name="search",
+        description="Search recordings by transcript text for a user on a given day.",
+    )
+    @app_commands.describe(
+        user="The user to search recordings for",
+        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-05)",
+        query="Text to search for in transcripts",
+    )
+    async def search_clips(
+        self,
+        context: Context,
+        user: discord.User,
+        date: str,
+        *,
+        query: str,
+    ) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
+        except ValueError:
+            await context.send(
+                embed=discord.Embed(
+                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        day_end = day_start + timedelta(days=1)
+
+        segments = await self.bot.database.search_segments_by_transcript(
+            user_id=user.id,
+            start_ts=day_start.timestamp(),
+            end_ts=day_end.timestamp(),
+            query=query,
+            guild_id=context.guild.id,
+        )
+
+        if not segments:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No results for **\"{query}\"** in {user.mention}'s recordings on {date}.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, date=f"{date} — \"{query}\"",
+        )
+        embed = view.build_embed()
+        await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
         name="playclip",
         description="Play a recorded clip in your current voice channel.",
     )
