@@ -414,7 +414,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         # Filter out mostly-silent segments by checking bytes-per-second.
         # seg tuple: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size)
-        MIN_BYTES_PER_SEC = 2000
+        MIN_BYTES_PER_SEC = 500
         segments = []
         for seg in all_segments:
             file_size = seg[7] or 0
