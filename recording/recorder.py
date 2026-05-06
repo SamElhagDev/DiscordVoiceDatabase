@@ -25,6 +25,11 @@ try:
 except ImportError:
     _davey = None
 
+try:
+    import numpy as _np
+except ImportError:
+    _np = None
+
 logger = logging.getLogger("discord_bot")
 
 # PCM settings from discord.py voice receive: 48kHz, stereo, 16-bit signed LE
@@ -43,9 +48,11 @@ def _rms(pcm_data: bytes) -> float:
     n_samples = len(pcm_data) // SAMPLE_WIDTH
     if n_samples == 0:
         return 0.0
+    if _np is not None:
+        samples = _np.frombuffer(pcm_data[:n_samples * SAMPLE_WIDTH], dtype="<i2")
+        return float(_np.sqrt(_np.mean(samples.astype(_np.float32) ** 2)))
     samples = struct.unpack(f"<{n_samples}h", pcm_data[:n_samples * SAMPLE_WIDTH])
-    sum_sq = sum(s * s for s in samples)
-    return math.sqrt(sum_sq / n_samples)
+    return math.sqrt(sum(s * s for s in samples) / n_samples)
 
 
 class UserStream:

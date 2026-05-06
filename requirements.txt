@@ -6,3 +6,4 @@ davey
 python-dotenv
 PyNaCl
 faster-whisper
+numpy

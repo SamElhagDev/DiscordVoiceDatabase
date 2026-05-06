@@ -12,7 +12,7 @@ from faster_whisper import WhisperModel
 
 logger = logging.getLogger("discord_bot")
 
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
 
 
 class Transcriber:
