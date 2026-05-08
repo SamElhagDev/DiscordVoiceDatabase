@@ -157,7 +157,10 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         try:
             pcm = decoder.decode(opus_bytes, fec=False)
         except Exception as e:
-            logger.debug(f"Opus decode failed for user {user.id}: {e}")
+            logger.debug(f"Opus decode failed for user {user.id}: {e} — resetting decoder")
+            # Decoder state is corrupted (e.g. after DAVE transition);
+            # replace it so the next packet starts fresh.
+            self._decoders[user.id] = opus_mod.Decoder()
             return
 
         self._callback(user, pcm)
