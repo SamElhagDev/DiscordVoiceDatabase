@@ -138,8 +138,13 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                     try:
                         opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
                     except Exception as e:
-                        logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
-                        return
+                        if "UnencryptedWhenPassthroughDisabled" in str(e):
+                            # Packet is plain Opus but passthrough window closed —
+                            # use it as-is rather than dropping audio.
+                            logger.debug(f"DAVE passthrough fallback for user {user.id} (unencrypted packet)")
+                        else:
+                            logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+                            return
                 else:
                     # DAVE active but MLS group not yet established — skip to avoid garbage PCM
                     return
