@@ -88,30 +88,54 @@ class ClipRetriever:
             # Single segment — just trim it
             seg = valid_segments[0]
             seg_start_ts = seg[4]
+            seg_end_ts = seg[5] if seg[5] is not None else end_ts
+            seg_duration = seg_end_ts - seg_start_ts
             trim_start = round(max(0.0, start_ts - seg_start_ts), 3)
+            # Clamp offset so we don't trim past the actual audio
+            trim_start = round(min(trim_start, max(0.0, seg_duration - 1)), 3)
             trim_duration = duration_minutes * 60
 
-            logger.debug(f"Trimming single segment: {seg[6]} (offset={trim_start}s, dur={trim_duration}s)")
+            logger.debug(f"Trimming single segment: {seg[6]} (offset={trim_start}s, dur={trim_duration}s, seg_dur={seg_duration:.1f}s)")
             await asyncio.to_thread(
                 self._trim_single, seg[6], output_file, trim_start, trim_duration
             )
         else:
             # Multiple segments — concat then trim
             first_seg_start = valid_segments[0][4]
+            last_seg_end = valid_segments[-1][5] if valid_segments[-1][5] is not None else end_ts
+            total_duration = last_seg_end - first_seg_start
             trim_start = round(max(0.0, start_ts - first_seg_start), 3)
+            # Clamp offset so we don't trim past the concatenated audio
+            trim_start = round(min(trim_start, max(0.0, total_duration - 1)), 3)
             trim_duration = duration_minutes * 60
 
             file_list = [seg[6] for seg in valid_segments]
-            logger.debug(f"Concatenating {len(file_list)} segments (offset={trim_start}s, dur={trim_duration}s)")
+            logger.debug(
+                f"Concatenating {len(file_list)} segments "
+                f"(offset={trim_start}s, dur={trim_duration}s, total_audio={total_duration:.1f}s)"
+            )
             await asyncio.to_thread(
                 self._concat_and_trim, file_list, output_file, trim_start, trim_duration
             )
 
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+        # An OGG header with no audio is ~137 bytes — reject anything under 1KB
+        MIN_CLIP_SIZE = 1024
+        if os.path.exists(output_file):
             out_size = os.path.getsize(output_file)
-            logger.info(f"Clip created: {output_file} ({out_size} bytes)")
-            return output_file
-        logger.warning(f"Clip output file missing or empty: {output_file}")
+            if out_size >= MIN_CLIP_SIZE:
+                logger.info(f"Clip created: {output_file} ({out_size} bytes)")
+                return output_file
+            else:
+                logger.warning(
+                    f"Clip too small ({out_size} bytes), likely empty audio — "
+                    f"trim may have overshot the actual content"
+                )
+                try:
+                    os.remove(output_file)
+                except OSError:
+                    pass
+                return None
+        logger.warning(f"Clip output file missing: {output_file}")
         return None
 
     @staticmethod
