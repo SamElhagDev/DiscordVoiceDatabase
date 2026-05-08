@@ -22,19 +22,22 @@ class SegmentCleanup:
 
     def start(self):
         self._task = asyncio.create_task(self._cleanup_loop())
+        logger.info(f"Segment cleanup started (retention={self.default_retention_days} days)")
 
     def stop(self):
         if self._task:
             self._task.cancel()
+            logger.info("Segment cleanup stopped")
 
     async def _cleanup_loop(self):
         """Run cleanup every hour."""
         try:
             while True:
+                logger.debug("Running scheduled cleanup cycle...")
                 await self._run_cleanup()
                 await asyncio.sleep(3600)  # every hour
         except asyncio.CancelledError:
-            pass
+            logger.debug("Cleanup loop cancelled")
 
     async def _run_cleanup(self):
         try:

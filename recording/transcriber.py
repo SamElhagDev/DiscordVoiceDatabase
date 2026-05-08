@@ -31,13 +31,16 @@ class Transcriber:
 
     def start(self):
         self._task = asyncio.create_task(self._worker())
+        logger.info("Transcription worker started")
 
     def stop(self):
         if self._task:
             self._task.cancel()
+            logger.info("Transcription worker stopped")
 
     async def enqueue(self, ogg_path: str, segment_id: int):
         await self._queue.put((ogg_path, segment_id))
+        logger.debug(f"Enqueued transcription: segment {segment_id} ({ogg_path}) — queue size: {self._queue.qsize()}")
 
     async def _worker(self):
         try:
@@ -45,11 +48,13 @@ class Transcriber:
                 ogg_path, segment_id = await self._queue.get()
                 try:
                     if not os.path.exists(ogg_path):
+                        logger.warning(f"Transcription skipped — file not found: {ogg_path} (segment {segment_id})")
                         continue
+                    logger.debug(f"Transcribing segment {segment_id}: {ogg_path}")
                     transcript = await asyncio.to_thread(self._transcribe, ogg_path)
                     result = transcript.strip() if transcript and transcript.strip() else "Blank"
                     await self.db.set_segment_transcript(segment_id, result)
-                    logger.debug(f"Transcribed segment {segment_id}: {result[:80]}")
+                    logger.info(f"Transcribed segment {segment_id}: {result[:80]}")
                 except Exception as e:
                     logger.error(f"Transcription failed for segment {segment_id}: {e}")
                 finally:

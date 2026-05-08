@@ -20,6 +20,7 @@ class ClipRetriever:
         self.db = database
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
+        logger.info(f"ClipRetriever initialized — output: {output_path}")
 
     async def retrieve_clip(
         self,
@@ -36,6 +37,11 @@ class ClipRetriever:
         start_ts = start_time.timestamp()
         end_ts = start_ts + (duration_minutes * 60)
 
+        logger.info(
+            f"Retrieving clip: user={user_id} start={start_time.isoformat()} "
+            f"duration={duration_minutes}m guild={guild_id}"
+        )
+
         # Find overlapping segments
         segments = await self.db.get_segments_in_range(
             user_id=user_id,
@@ -45,7 +51,10 @@ class ClipRetriever:
         )
 
         if not segments:
+            logger.warning(f"No segments found in DB for user {user_id} in range [{start_ts:.0f}, {end_ts:.0f}]")
             return None
+
+        logger.debug(f"Found {len(segments)} DB segment(s) for clip retrieval")
 
         # Filter to segments that actually have files on disk.
         # Fall back to the sibling .pcm file if the .ogg hasn't been remuxed yet.
@@ -82,6 +91,7 @@ class ClipRetriever:
             trim_start = round(max(0.0, start_ts - seg_start_ts), 3)
             trim_duration = duration_minutes * 60
 
+            logger.debug(f"Trimming single segment: {seg[6]} (offset={trim_start}s, dur={trim_duration}s)")
             await asyncio.to_thread(
                 self._trim_single, seg[6], output_file, trim_start, trim_duration
             )
@@ -92,12 +102,16 @@ class ClipRetriever:
             trim_duration = duration_minutes * 60
 
             file_list = [seg[6] for seg in valid_segments]
+            logger.debug(f"Concatenating {len(file_list)} segments (offset={trim_start}s, dur={trim_duration}s)")
             await asyncio.to_thread(
                 self._concat_and_trim, file_list, output_file, trim_start, trim_duration
             )
 
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            out_size = os.path.getsize(output_file)
+            logger.info(f"Clip created: {output_file} ({out_size} bytes)")
             return output_file
+        logger.warning(f"Clip output file missing or empty: {output_file}")
         return None
 
     @staticmethod

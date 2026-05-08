@@ -37,6 +37,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     async def cog_load(self):
         """Called when the cog is loaded. Start cleanup task."""
+        logger.info("VoiceDatabase cog loading...")
         # Wait until db is ready (setup_hook sets self.bot.database)
         self.retriever = ClipRetriever(self.bot.database, output_path=CLIPS_PATH)
         self.cleanup = SegmentCleanup(self.bot.database, default_retention_days=RETENTION_DAYS)
@@ -44,9 +45,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.transcriber = Transcriber(self.bot.database)
         self.transcriber.start()
         self.auto_rejoin_loop.start()
+        logger.info("VoiceDatabase cog loaded — cleanup, transcriber, and auto-rejoin active")
 
     async def cog_unload(self):
         """Called when the cog is unloaded. Stop all recordings."""
+        logger.info("VoiceDatabase cog unloading...")
         self.auto_rejoin_loop.cancel()
         if self.cleanup:
             self.cleanup.stop()
@@ -56,10 +59,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             recorder = self.recorders.pop(guild_id, None)
             if recorder:
                 await recorder.stop()
+        logger.info("VoiceDatabase cog unloaded")
 
     async def _connect_voice(self, channel: discord.VoiceChannel) -> discord.VoiceClient | None:
         """Connect to a voice channel, clearing any stale session first.
         Returns the VoiceClient or None on failure."""
+        logger.debug(f"Connecting to voice channel #{channel.name} in {channel.guild.name}")
         guild = channel.guild
         if guild.voice_client:
             try:
@@ -76,6 +81,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                     await vc.disconnect(force=True)
                     await asyncio.sleep(2)
                     continue
+                logger.info(f"Voice connected to #{channel.name} (attempt {attempt + 1})")
                 return vc
             except (discord.ClientException, discord.errors.ConnectionClosed) as e:
                 logger.warning(f"Voice connect failed (attempt {attempt + 1}): {e}")
@@ -103,6 +109,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         )
 
         if newly_registered:
+            logger.info(f"/join: {context.author} ({context.author.id}) opted in to guild {context.guild.id}")
             embed = discord.Embed(
                 description=f"{context.author.mention} has opted in to voice recording.",
                 color=0x57F287,
@@ -112,6 +119,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             if recorder:
                 await recorder.refresh_consent()
         else:
+            logger.debug(f"/join: {context.author} ({context.author.id}) already opted in")
             embed = discord.Embed(
                 description=f"{context.author.mention} is already opted in.",
                 color=0xFEE75C,
@@ -133,6 +141,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         )
 
         if was_registered:
+            logger.info(f"/leave: {context.author} ({context.author.id}) opted out of guild {context.guild.id}")
             embed = discord.Embed(
                 description=f"{context.author.mention} has opted out of voice recording.",
                 color=0xED4245,
@@ -218,6 +227,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
+        logger.info(f"/record: {context.author} starting recording in #{channel.name} (guild {context.guild.id})")
         vc = await self._connect_voice(channel)
         if vc is None:
             await context.send(
@@ -240,6 +250,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         )
         await recorder.start(vc)
         self.recorders[context.guild.id] = recorder
+        logger.info(f"/record: Recording active in #{channel.name} (segment_dur={settings['segment_duration_sec']}s)")
 
         await context.send(
             embed=discord.Embed(
@@ -268,12 +279,14 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
+        logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
         await recorder.stop()
 
         # Disconnect from voice
         if context.guild.voice_client:
             await context.guild.voice_client.disconnect(force=True)
 
+        logger.info(f"/stoprecord: Recording stopped and disconnected in {context.guild.name}")
         await context.send(
             embed=discord.Embed(
                 description="Recording stopped and disconnected.",
@@ -285,101 +298,66 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     @commands.hybrid_command(
         name="clip",
-        description="Retrieve a recorded clip. Usage: !clip @user 2026-04-30T13:44:00 10",
+        description="Browse and download a recorded clip for a user on a given day.",
     )
     @app_commands.describe(
         user="The user whose audio you want to retrieve",
-        start="Start timestamp (YYYY-MM-DDTHH:MM:SS EST/EDT)",
-        minutes="Duration in minutes",
+        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-05)",
     )
     async def retrieve_clip(
         self,
         context: Context,
         user: discord.User,
-        start: str,
-        minutes: int = 10,
+        date: str,
     ) -> None:
         if context.guild is None:
             await context.send("This command can only be used in a server.")
             return
 
-        # Verify the target user has consented
-        is_registered = await self.bot.database.is_user_registered(
-            context.guild.id, user.id
-        )
-        if not is_registered:
-            await context.send(
-                embed=discord.Embed(
-                    description=f"{user.mention} is not opted in to recording.",
-                    color=0xED4245,
-                )
-            )
-            return
-
-        # Parse the start timestamp
         try:
-            start_time = datetime.fromisoformat(start).replace(tzinfo=EST)
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
-                    description="Invalid timestamp format. Use `YYYY-MM-DDTHH:MM:SS` in EST/EDT (e.g. `2026-05-02T22:00:00`).",
+                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
                     color=0xED4245,
                 )
             )
             return
 
-        if minutes < 1 or minutes > 60:
-            await context.send(
-                embed=discord.Embed(
-                    description="Duration must be between 1 and 60 minutes.",
-                    color=0xED4245,
-                )
-            )
-            return
+        day_end = day_start + timedelta(days=1)
 
-        await context.defer()  # this might take a while
-
-        clip_path = await self.retriever.retrieve_clip(
+        all_segments = await self.bot.database.get_segments_in_range(
             user_id=user.id,
-            start_time=start_time,
-            duration_minutes=minutes,
+            start_ts=day_start.timestamp(),
+            end_ts=day_end.timestamp(),
             guild_id=context.guild.id,
         )
 
-        if clip_path is None:
+        segments = []
+        for seg in all_segments:
+            transcript = seg[8] if len(seg) > 8 else None
+            if transcript == "Blank":
+                continue
+            segments.append(seg)
+
+        logger.info(f"/clip: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+
+        if not segments:
             await context.send(
                 embed=discord.Embed(
-                    description=f"No recorded audio found for {user.mention} at that time.",
+                    description=f"No recordings found for {user.mention} on {date}.",
                     color=0xFEE75C,
                 )
             )
             return
 
-        file_size = os.path.getsize(clip_path)
-        if file_size > 25 * 1024 * 1024:  # Discord file upload limit
-            await context.send(
-                embed=discord.Embed(
-                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB). Try a shorter duration.",
-                    color=0xED4245,
-                )
-            )
-            return
-
-        embed = discord.Embed(
-            title="Audio Clip Retrieved",
-            description=f"**User:** {user.mention}\n**Start:** {start}\n**Duration:** {minutes} min",
-            color=0x5865F2,
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, date=date, mode="download",
         )
-        await context.send(
-            embed=embed,
-            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
-        )
-
-        # Clean up the clip file after sending
-        try:
-            os.remove(clip_path)
-        except OSError:
-            pass
+        embed = view.build_embed()
+        await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="transcribe",
@@ -396,6 +374,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         segments = await self.bot.database.get_untranscribed_segments(guild_id=context.guild.id)
         valid = [(seg_id, fp) for seg_id, fp in segments if fp and os.path.exists(fp)]
+        logger.info(f"/transcribe: {len(segments)} untranscribed, {len(valid)} with files on disk")
         if not valid:
             await context.send(embed=discord.Embed(description="No untranscribed segments found.", color=0xFEE75C))
             return
@@ -477,6 +456,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 continue
             segments.append(seg)
 
+        logger.info(f"/listclips: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+
         if not segments:
             await context.send(
                 embed=discord.Embed(
@@ -534,6 +515,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             query=query,
             guild_id=context.guild.id,
         )
+
+        logger.info(f"/search: user={user.id} date={date} query=\"{query}\" — {len(segments)} result(s)")
 
         if not segments:
             await context.send(
@@ -621,6 +604,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         await context.defer()
 
+        logger.info(f"/playclip: user={user.id} start={start} minutes={minutes}")
         clip_path = await self.retriever.retrieve_clip(
             user_id=user.id,
             start_time=start_time,
@@ -719,6 +703,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             ))
             return
 
+        logger.info(f"/stop: Playback stopped by {context.author} in {context.guild.name}")
         vc.stop()
         await context.send(embed=discord.Embed(
             description="Playback stopped.",
@@ -902,6 +887,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         consented = recorder.consented_users
         members_in_channel = {m.id for m in channel.members if not m.bot}
         active_consented = consented & members_in_channel
+        logger.debug(
+            f"Voice state update in #{channel.name}: {len(members_in_channel)} member(s), "
+            f"{len(active_consented)} consented"
+        )
 
         if not active_consented:
             # No consented users left — stop recording
@@ -1025,6 +1014,7 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
         vc.play(source, after=after_play)
 
         start_str = start_time.strftime("%I:%M %p")
+        logger.info(f"PlayModal: Playing clip for user {self.target_user.id} at {start_str} ({duration_minutes} min)")
         await interaction.followup.send(
             embed=discord.Embed(
                 description=f"Playing for {self.target_user.mention} ({start_str}, {duration_minutes} min).",
@@ -1061,14 +1051,115 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             pass
 
 
+class _DownloadModal(discord.ui.Modal, title="Download Clip"):
+    duration = discord.ui.TextInput(
+        label="Duration (minutes)",
+        placeholder="e.g. 5",
+        required=True,
+        max_length=3,
+    )
+    start_offset = discord.ui.TextInput(
+        label="Start offset from segment start (minutes)",
+        placeholder="0 = from beginning",
+        required=False,
+        default="0",
+        max_length=3,
+    )
+
+    def __init__(self, cog, seg, target_user, default_duration):
+        super().__init__()
+        self.cog = cog
+        self.seg = seg
+        self.target_user = target_user
+        self.duration.default = default_duration
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            duration_minutes = int(self.duration.value)
+        except ValueError:
+            await interaction.response.send_message("Duration must be a number.", ephemeral=True)
+            return
+
+        try:
+            offset_minutes = int(self.start_offset.value or "0")
+        except ValueError:
+            await interaction.response.send_message("Offset must be a number.", ephemeral=True)
+            return
+
+        if duration_minutes < 1 or duration_minutes > 60:
+            await interaction.response.send_message("Duration must be between 1 and 60.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        start_time = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+
+        clip_path = await self.cog.retriever.retrieve_clip(
+            user_id=self.target_user.id,
+            start_time=start_time,
+            duration_minutes=duration_minutes,
+            guild_id=interaction.guild.id,
+        )
+
+        if clip_path is None:
+            await interaction.followup.send(
+                embed=discord.Embed(description="No audio found for that segment.", color=0xFEE75C),
+                ephemeral=True,
+            )
+            return
+
+        file_size = os.path.getsize(clip_path)
+        if file_size > 25 * 1024 * 1024:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB). Try a shorter duration.",
+                    color=0xED4245,
+                ),
+                ephemeral=True,
+            )
+            try:
+                os.remove(clip_path)
+            except OSError:
+                pass
+            return
+
+        start_str = start_time.strftime("%I:%M %p")
+        logger.info(f"DownloadModal: Sending clip for user {self.target_user.id} at {start_str} ({duration_minutes} min, {file_size} bytes)")
+        embed = discord.Embed(
+            title="Audio Clip Retrieved",
+            description=f"**User:** {self.target_user.mention}\n**Start:** {start_str}\n**Duration:** {duration_minutes} min",
+            color=0x5865F2,
+        )
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
+        )
+
+        try:
+            os.remove(clip_path)
+        except OSError:
+            pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        logger.error(f"DownloadModal error: {error}", exc_info=True)
+        try:
+            await interaction.followup.send(
+                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+
+
 class _ClipSelectView(discord.ui.View):
-    def __init__(self, cog, segments, target_user, invoker_id, date):
+    def __init__(self, cog, segments, target_user, invoker_id, date, mode="play"):
         super().__init__(timeout=120)
         self.cog = cog
         self.segments = segments
         self.target_user = target_user
         self.invoker_id = invoker_id
         self.date = date
+        self.mode = mode  # "play" or "download"
         self.page = 0
         self.per_page = 10
         self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
@@ -1098,7 +1189,8 @@ class _ClipSelectView(discord.ui.View):
             options.append(discord.SelectOption(
                 label=label, description=desc, value=str(int(seg[4])),
             ))
-        select = discord.ui.Select(placeholder="Pick a segment to play...", options=options)
+        placeholder = "Pick a segment to download..." if self.mode == "download" else "Pick a segment to play..."
+        select = discord.ui.Select(placeholder=placeholder, options=options)
         select.callback = self.on_select
         self.add_item(select)
 
@@ -1131,7 +1223,8 @@ class _ClipSelectView(discord.ui.View):
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
             field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
             embed.add_field(name=field_name, value=field_value, inline=False)
-        embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to play it")
+        action = "download" if self.mode == "download" else "play"
+        embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action} it")
         return embed
 
     async def _prev_page(self, interaction: discord.Interaction):
@@ -1156,20 +1249,30 @@ class _ClipSelectView(discord.ui.View):
         selected_ts = int(interaction.data["values"][0])
         seg = next((s for s in self.segments if int(s[4]) == selected_ts), None)
         if seg is None:
+            logger.warning(f"ClipSelectView: Segment not found for ts={selected_ts}")
             await interaction.response.send_message("Segment not found.", ephemeral=True)
             return
+        logger.debug(f"ClipSelectView: Selected segment id={seg[0]} ts={selected_ts} mode={self.mode}")
 
         if seg[5] is not None:
             default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))
         else:
             default_dur = "1"
 
-        modal = _PlayModal(
-            cog=self.cog,
-            seg=seg,
-            target_user=self.target_user,
-            default_duration=default_dur,
-        )
+        if self.mode == "download":
+            modal = _DownloadModal(
+                cog=self.cog,
+                seg=seg,
+                target_user=self.target_user,
+                default_duration=default_dur,
+            )
+        else:
+            modal = _PlayModal(
+                cog=self.cog,
+                seg=seg,
+                target_user=self.target_user,
+                default_duration=default_dur,
+            )
         await interaction.response.send_modal(modal)
 
 

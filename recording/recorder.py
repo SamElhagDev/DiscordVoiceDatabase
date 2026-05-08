@@ -85,11 +85,14 @@ class UserStream:
 
     def flush_to_disk(self) -> str:
         """Write buffer to PCM file and return the path."""
-        if self.buffer.tell() == 0:
+        buf_size = self.buffer.tell()
+        if buf_size == 0:
+            logger.debug(f"UserStream flush: no data for user {self.user_id}")
             return None
         self.buffer.seek(0)
         with open(self.pcm_path, "wb") as f:
             f.write(self.buffer.read())
+        logger.debug(f"UserStream flush: wrote {buf_size} bytes to {self.pcm_path}")
         return self.pcm_path
 
     @property
@@ -249,7 +252,9 @@ class VoiceRecorder:
 
     async def refresh_consent(self):
         """Refresh the consented user set from DB (call periodically or on user join/leave)."""
+        old_count = len(self.consented_users)
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
+        logger.debug(f"Consent refreshed for guild {self.guild.id}: {old_count} → {len(self.consented_users)} users")
 
     def on_audio_packet(self, user: discord.User, data: bytes):
         if user.id not in self.consented_users:
@@ -265,6 +270,7 @@ class VoiceRecorder:
                     base_path=self.recordings_path,
                 )
                 self.user_streams[user.id] = stream
+                logger.debug(f"New audio stream opened for user {user.id} ({user.name})")
 
             stream.write(data)
 

@@ -1,6 +1,9 @@
 import aiosqlite
+import logging
 import os
 import time
+
+logger = logging.getLogger("discord_bot")
 
 
 class DatabaseManager:
@@ -30,6 +33,7 @@ class DatabaseManager:
                     (guild_id, user_id, username),
                 )
             await self.connection.commit()
+            logger.info(f"User registered: guild={guild_id} user={user_id} ({username})")
             return True
 
     async def unregister_user(self, guild_id: int, user_id: int) -> bool:
@@ -47,6 +51,7 @@ class DatabaseManager:
                 (guild_id, user_id),
             )
             await self.connection.commit()
+            logger.info(f"User unregistered: guild={guild_id} user={user_id}")
             return True
 
     async def is_user_registered(self, guild_id: int, user_id: int) -> bool:
@@ -86,6 +91,7 @@ class DatabaseManager:
             (guild_id, channel_id, user_id, start_ts, file_path),
         )
         await self.connection.commit()
+        logger.debug(f"Segment added: id={cursor.lastrowid} user={user_id} file={file_path}")
         return cursor.lastrowid
 
     async def close_segment(self, segment_id: int, end_ts: float, file_size: int = 0):
@@ -94,6 +100,7 @@ class DatabaseManager:
             (end_ts, file_size, segment_id),
         )
         await self.connection.commit()
+        logger.debug(f"Segment closed: id={segment_id} size={file_size}")
 
     async def update_segment_file_size(self, segment_id: int, file_size: int):
         await self.connection.execute(
@@ -146,6 +153,7 @@ class DatabaseManager:
             segment_ids,
         )
         await self.connection.commit()
+        logger.info(f"Deleted {len(segment_ids)} segment(s) from DB")
 
     # ── Settings operations ─────────────────────────────────────────────
 
@@ -178,6 +186,7 @@ class DatabaseManager:
             (guild_id, channel_id),
         )
         await self.connection.commit()
+        logger.info(f"Primary channel set: guild={guild_id} channel={channel_id}")
 
     async def set_retention_days(self, guild_id: int, days: int):
         await self.connection.execute(
@@ -187,6 +196,7 @@ class DatabaseManager:
             (guild_id, days),
         )
         await self.connection.commit()
+        logger.info(f"Retention set: guild={guild_id} days={days}")
 
     # ── Transcription operations ───────────────────────────────────────
 
@@ -196,6 +206,7 @@ class DatabaseManager:
             (transcript, segment_id),
         )
         await self.connection.commit()
+        logger.debug(f"Transcript saved: segment={segment_id} length={len(transcript)}")
 
     async def get_segment_transcript(self, segment_id: int) -> str | None:
         rows = await self.connection.execute(

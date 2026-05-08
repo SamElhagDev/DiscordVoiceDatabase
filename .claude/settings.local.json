@@ -20,7 +20,14 @@
       "Bash(pip show *)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/transcriber.py'\\).read\\(\\)\\); ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('All files parse OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('database/__init__.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/transcriber.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py'\\).read\\(\\)\\); ast.parse\\(open\\('recording/transcriber.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('cogs/voicedatabase.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -m py_compile bot.py)",
+      "Bash(python -m py_compile recording/recorder.py)",
+      "Bash(python -m py_compile recording/transcriber.py)",
+      "Bash(python -m py_compile recording/retriever.py)",
+      "Bash(python -m py_compile recording/cleanup.py)",
+      "Bash(python -m py_compile cogs/voicedatabase.py)"
     ]
   }
 }

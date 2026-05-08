@@ -79,7 +79,7 @@ class LoggingFormatter(logging.Formatter):
 
 
 logger = logging.getLogger("discord_bot")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
@@ -106,6 +106,7 @@ class DiscordBot(commands.Bot):
         self.invite_link = os.getenv("INVITE_LINK", "")
 
     async def init_db(self) -> None:
+        self.logger.info("Initializing database schema...")
         async with aiosqlite.connect(DB_PATH) as db:
             with open(
                 os.path.join(os.path.realpath(os.path.dirname(__file__)), "database", "schema.sql"),
@@ -122,8 +123,10 @@ class DiscordBot(commands.Bot):
                 try:
                     await db.execute(sql)
                     await db.commit()
+                    self.logger.info(f"Applied migration: {sql}")
                 except Exception:
-                    pass
+                    pass  # column already exists
+        self.logger.info("Database schema ready")
 
     async def load_cogs(self) -> None:
         for file in os.listdir(
@@ -172,8 +175,10 @@ class DiscordBot(commands.Bot):
         self.status_task.start()
 
     async def close(self) -> None:
+        self.logger.info("Bot shutting down — closing database connection...")
         if self.database:
             await self.database.connection.close()
+            self.logger.info("Database connection closed")
         await super().close()
 
     async def on_message(self, message: discord.Message) -> None:
