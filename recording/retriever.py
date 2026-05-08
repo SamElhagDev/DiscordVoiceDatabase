@@ -28,18 +28,32 @@ class ClipRetriever:
         start_time: datetime,
         duration_minutes: int,
         guild_id: int = None,
-    ) -> str:
+        anchor_seg: tuple = None,
+        offset_sec: float = 0.0,
+    ) -> str | None:
         """
         Retrieve an audio clip for a user starting at start_time for duration_minutes.
 
-        Returns the path to the output OGG file, or None if no segments found.
+        If *anchor_seg* is provided (a DB segment tuple), the DB query starts
+        from that segment and extends forward only.  *offset_sec* is applied
+        as an FFmpeg trim within the resulting audio (skip the first N seconds).
+
+        Returns the path to the output OGG file, or None if no audio found.
         """
-        start_ts = start_time.timestamp()
-        end_ts = start_ts + (duration_minutes * 60)
+        # When we have an anchor segment, query FORWARD from its start —
+        # never look backward at earlier segments.
+        if anchor_seg is not None:
+            start_ts = anchor_seg[4]  # anchor segment's start is our start
+            # Extend the query window to cover offset + duration
+            end_ts = start_ts + offset_sec + (duration_minutes * 60)
+        else:
+            start_ts = start_time.timestamp()
+            end_ts = start_ts + (duration_minutes * 60)
 
         logger.info(
-            f"Retrieving clip: user={user_id} start={start_time.isoformat()} "
+            f"Retrieving clip: user={user_id} start_ts={start_ts:.0f} "
             f"duration={duration_minutes}m guild={guild_id}"
+            + (f" anchor_seg={anchor_seg[0]}" if anchor_seg else "")
         )
 
         # Find overlapping segments
@@ -54,22 +68,35 @@ class ClipRetriever:
             logger.warning(f"No segments found in DB for user {user_id} in range [{start_ts:.0f}, {end_ts:.0f}]")
             return None
 
+        # With an anchor, drop anything that started before the anchor —
+        # the DB overlap query can still pull in an earlier segment whose
+        # end_ts crosses into our window.
+        if anchor_seg is not None:
+            anchor_start = anchor_seg[4]
+            before = len(segments)
+            segments = [s for s in segments if s[4] >= anchor_start]
+            if before != len(segments):
+                logger.debug(
+                    f"Anchor filter: dropped {before - len(segments)} segment(s) "
+                    f"that started before anchor ts={anchor_start:.0f}"
+                )
+
         logger.debug(f"Found {len(segments)} DB segment(s) for clip retrieval")
 
         # Filter to segments that actually have files on disk.
         # Fall back to the sibling .pcm file if the .ogg hasn't been remuxed yet.
         valid_segments = []
         for seg in segments:
-            # seg: (id, guild_id, channel_id, user_id, start_ts, end_ts, file_path)
             file_path = seg[6]
             if os.path.exists(file_path):
                 valid_segments.append(seg)
             else:
                 pcm_path = os.path.splitext(file_path)[0] + ".pcm"
                 if os.path.exists(pcm_path):
-                    # Wrap the row with the pcm path so ffmpeg can read it directly
-                    valid_segments.append(seg[:6] + (pcm_path,))
+                    valid_segments.append(seg[:6] + (pcm_path,) + seg[7:])
                     logger.debug(f"Using PCM fallback for segment {seg[0]}: {pcm_path}")
+                else:
+                    logger.warning(f"Segment {seg[0]} file missing: {file_path} (and no PCM fallback)")
 
         if not valid_segments:
             logger.warning(
@@ -84,29 +111,51 @@ class ClipRetriever:
             self.output_path, f"clip_{user_id}_{ts_str}_{duration_minutes}m.ogg"
         )
 
+        # Calculate trim offset:
+        #  - With anchor: offset_sec is the user's requested skip (already in seconds)
+        #  - Without anchor: compute from timestamp difference
         if len(valid_segments) == 1:
-            # Single segment — just trim it
             seg = valid_segments[0]
             seg_start_ts = seg[4]
             seg_end_ts = seg[5] if seg[5] is not None else end_ts
             seg_duration = seg_end_ts - seg_start_ts
-            trim_start = round(max(0.0, start_ts - seg_start_ts), 3)
-            # Clamp offset so we don't trim past the actual audio
-            trim_start = round(min(trim_start, max(0.0, seg_duration - 1)), 3)
+
+            if anchor_seg is not None:
+                trim_start = round(offset_sec, 3)
+            else:
+                trim_start = round(max(0.0, start_ts - seg_start_ts), 3)
+
+            if trim_start >= seg_duration:
+                logger.warning(
+                    f"Trim offset {trim_start:.1f}s >= segment duration {seg_duration:.1f}s — "
+                    f"resetting to 0"
+                )
+                trim_start = 0.0
             trim_duration = duration_minutes * 60
 
-            logger.debug(f"Trimming single segment: {seg[6]} (offset={trim_start}s, dur={trim_duration}s, seg_dur={seg_duration:.1f}s)")
+            logger.debug(
+                f"Trimming single segment: {seg[6]} "
+                f"(offset={trim_start}s, dur={trim_duration}s, seg_dur={seg_duration:.1f}s)"
+            )
             await asyncio.to_thread(
                 self._trim_single, seg[6], output_file, trim_start, trim_duration
             )
         else:
-            # Multiple segments — concat then trim
             first_seg_start = valid_segments[0][4]
             last_seg_end = valid_segments[-1][5] if valid_segments[-1][5] is not None else end_ts
             total_duration = last_seg_end - first_seg_start
-            trim_start = round(max(0.0, start_ts - first_seg_start), 3)
-            # Clamp offset so we don't trim past the concatenated audio
-            trim_start = round(min(trim_start, max(0.0, total_duration - 1)), 3)
+
+            if anchor_seg is not None:
+                trim_start = round(offset_sec, 3)
+            else:
+                trim_start = round(max(0.0, start_ts - first_seg_start), 3)
+
+            if trim_start >= total_duration:
+                logger.warning(
+                    f"Trim offset {trim_start:.1f}s >= total audio {total_duration:.1f}s — "
+                    f"resetting to 0"
+                )
+                trim_start = 0.0
             trim_duration = duration_minutes * 60
 
             file_list = [seg[6] for seg in valid_segments]

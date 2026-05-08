@@ -960,18 +960,24 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
             return
 
-        start_time = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        start_time = datetime.fromtimestamp(self.seg[4], tz=EST)
 
         clip_path = await self.cog.retriever.retrieve_clip(
             user_id=self.target_user.id,
             start_time=start_time,
             duration_minutes=duration_minutes,
             guild_id=guild.id,
+            anchor_seg=self.seg,
+            offset_sec=offset_minutes * 60,
         )
 
         if clip_path is None:
+            logger.warning(f"PlayModal: No audio for segment {self.seg[0]} user={self.target_user.id}")
             await interaction.followup.send(
-                embed=discord.Embed(description="No audio found for that segment.", color=0xFEE75C),
+                embed=discord.Embed(
+                    description="No audio found for that segment. The file may have been cleaned up or is still processing.",
+                    color=0xFEE75C,
+                ),
                 ephemeral=True,
             )
             return
@@ -1013,7 +1019,8 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
         source = discord.FFmpegOpusAudio(clip_path)
         vc.play(source, after=after_play)
 
-        start_str = start_time.strftime("%I:%M %p")
+        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        start_str = play_from.strftime("%I:%M %p")
         logger.info(f"PlayModal: Playing clip for user {self.target_user.id} at {start_str} ({duration_minutes} min)")
         await interaction.followup.send(
             embed=discord.Embed(
@@ -1092,18 +1099,24 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
 
         await interaction.response.defer()
 
-        start_time = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        start_time = datetime.fromtimestamp(self.seg[4], tz=EST)
 
         clip_path = await self.cog.retriever.retrieve_clip(
             user_id=self.target_user.id,
             start_time=start_time,
             duration_minutes=duration_minutes,
             guild_id=interaction.guild.id,
+            anchor_seg=self.seg,
+            offset_sec=offset_minutes * 60,
         )
 
         if clip_path is None:
+            logger.warning(f"DownloadModal: No audio for segment {self.seg[0]} user={self.target_user.id}")
             await interaction.followup.send(
-                embed=discord.Embed(description="No audio found for that segment.", color=0xFEE75C),
+                embed=discord.Embed(
+                    description="No audio found for that segment. The file may have been cleaned up or is still processing.",
+                    color=0xFEE75C,
+                ),
                 ephemeral=True,
             )
             return
@@ -1123,7 +1136,8 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
                 pass
             return
 
-        start_str = start_time.strftime("%I:%M %p")
+        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        start_str = play_from.strftime("%I:%M %p")
         logger.info(f"DownloadModal: Sending clip for user {self.target_user.id} at {start_str} ({duration_minutes} min, {file_size} bytes)")
         embed = discord.Embed(
             title="Audio Clip Retrieved",
