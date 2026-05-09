@@ -68,7 +68,7 @@ class LoggingFormatter(logging.Formatter):
     }
 
     def format(self, record):
-        log_color = self.COLORS[record.levelno]
+        log_color = self.COLORS.get(record.levelno, self.gray)
         format = "(black){asctime}(reset) (levelcolor){levelname:<8}(reset) (green){name}(reset) {message}"
         format = format.replace("(black)", self.black + self.bold)
         format = format.replace("(reset)", self.reset)
@@ -83,7 +83,7 @@ logger.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
-file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
+file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
 file_handler_formatter = logging.Formatter(
     "[{asctime}] [{levelname:<8}] {name}: {message}", "%Y-%m-%d %H:%M:%S", style="{"
 )

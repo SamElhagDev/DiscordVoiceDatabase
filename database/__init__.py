@@ -1,3 +1,5 @@
+import asyncio
+
 import aiosqlite
 import logging
 import os
@@ -9,50 +11,53 @@ logger = logging.getLogger("discord_bot")
 class DatabaseManager:
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
+        self._lock = asyncio.Lock()
 
     # ── Consent / participation operations ──────────────────────────────
 
     async def register_user(self, guild_id: int, user_id: int, username: str) -> bool:
         """Opt a user in to recording. Returns True if newly registered, False if already registered."""
-        existing = await self.connection.execute(
-            "SELECT granted FROM consent WHERE guild_id=? AND user_id=?",
-            (guild_id, user_id),
-        )
-        async with existing as cursor:
-            row = await cursor.fetchone()
-            if row is not None:
-                if row[0] == 1:
-                    return False  # already registered
-                await self.connection.execute(
-                    "UPDATE consent SET granted=1, username=?, opted_in_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?",
-                    (username, guild_id, user_id),
-                )
-            else:
-                await self.connection.execute(
-                    "INSERT INTO consent(guild_id, user_id, username, granted) VALUES (?, ?, ?, 1)",
-                    (guild_id, user_id, username),
-                )
-            await self.connection.commit()
-            logger.info(f"User registered: guild={guild_id} user={user_id} ({username})")
-            return True
+        async with self._lock:
+            existing = await self.connection.execute(
+                "SELECT granted FROM consent WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+            async with existing as cursor:
+                row = await cursor.fetchone()
+                if row is not None:
+                    if row[0] == 1:
+                        return False  # already registered
+                    await self.connection.execute(
+                        "UPDATE consent SET granted=1, username=?, opted_in_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?",
+                        (username, guild_id, user_id),
+                    )
+                else:
+                    await self.connection.execute(
+                        "INSERT INTO consent(guild_id, user_id, username, granted) VALUES (?, ?, ?, 1)",
+                        (guild_id, user_id, username),
+                    )
+                await self.connection.commit()
+                logger.info(f"User registered: guild={guild_id} user={user_id} ({username})")
+                return True
 
     async def unregister_user(self, guild_id: int, user_id: int) -> bool:
         """Opt a user out of recording. Returns True if was registered, False if wasn't."""
-        existing = await self.connection.execute(
-            "SELECT granted FROM consent WHERE guild_id=? AND user_id=?",
-            (guild_id, user_id),
-        )
-        async with existing as cursor:
-            row = await cursor.fetchone()
-            if row is None or row[0] == 0:
-                return False
-            await self.connection.execute(
-                "UPDATE consent SET granted=0 WHERE guild_id=? AND user_id=?",
+        async with self._lock:
+            existing = await self.connection.execute(
+                "SELECT granted FROM consent WHERE guild_id=? AND user_id=?",
                 (guild_id, user_id),
             )
-            await self.connection.commit()
-            logger.info(f"User unregistered: guild={guild_id} user={user_id}")
-            return True
+            async with existing as cursor:
+                row = await cursor.fetchone()
+                if row is None or row[0] == 0:
+                    return False
+                await self.connection.execute(
+                    "UPDATE consent SET granted=0 WHERE guild_id=? AND user_id=?",
+                    (guild_id, user_id),
+                )
+                await self.connection.commit()
+                logger.info(f"User unregistered: guild={guild_id} user={user_id}")
+                return True
 
     async def is_user_registered(self, guild_id: int, user_id: int) -> bool:
         rows = await self.connection.execute(
@@ -86,28 +91,31 @@ class DatabaseManager:
     async def add_segment(
         self, guild_id: int, channel_id: int, user_id: int, start_ts: float, file_path: str
     ) -> int:
-        cursor = await self.connection.execute(
-            "INSERT INTO segments(guild_id, channel_id, user_id, start_ts, file_path) VALUES (?, ?, ?, ?, ?)",
-            (guild_id, channel_id, user_id, start_ts, file_path),
-        )
-        await self.connection.commit()
-        logger.debug(f"Segment added: id={cursor.lastrowid} user={user_id} file={file_path}")
-        return cursor.lastrowid
+        async with self._lock:
+            cursor = await self.connection.execute(
+                "INSERT INTO segments(guild_id, channel_id, user_id, start_ts, file_path) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, channel_id, user_id, start_ts, file_path),
+            )
+            await self.connection.commit()
+            logger.debug(f"Segment added: id={cursor.lastrowid} user={user_id} file={file_path}")
+            return cursor.lastrowid
 
     async def close_segment(self, segment_id: int, end_ts: float, file_size: int = 0):
-        await self.connection.execute(
-            "UPDATE segments SET end_ts=?, file_size=? WHERE id=?",
-            (end_ts, file_size, segment_id),
-        )
-        await self.connection.commit()
-        logger.debug(f"Segment closed: id={segment_id} size={file_size}")
+        async with self._lock:
+            await self.connection.execute(
+                "UPDATE segments SET end_ts=?, file_size=? WHERE id=?",
+                (end_ts, file_size, segment_id),
+            )
+            await self.connection.commit()
+            logger.debug(f"Segment closed: id={segment_id} size={file_size}")
 
     async def update_segment_file_size(self, segment_id: int, file_size: int):
-        await self.connection.execute(
-            "UPDATE segments SET file_size=? WHERE id=?",
-            (file_size, segment_id),
-        )
-        await self.connection.commit()
+        async with self._lock:
+            await self.connection.execute(
+                "UPDATE segments SET file_size=? WHERE id=?",
+                (file_size, segment_id),
+            )
+            await self.connection.commit()
 
     async def get_segments_in_range(
         self, user_id: int, start_ts: float, end_ts: float, guild_id: int = None
@@ -147,13 +155,14 @@ class DatabaseManager:
     async def delete_segments_by_ids(self, segment_ids: list):
         if not segment_ids:
             return
-        placeholders = ",".join("?" for _ in segment_ids)
-        await self.connection.execute(
-            f"DELETE FROM segments WHERE id IN ({placeholders})",
-            segment_ids,
-        )
-        await self.connection.commit()
-        logger.info(f"Deleted {len(segment_ids)} segment(s) from DB")
+        async with self._lock:
+            placeholders = ",".join("?" for _ in segment_ids)
+            await self.connection.execute(
+                f"DELETE FROM segments WHERE id IN ({placeholders})",
+                segment_ids,
+            )
+            await self.connection.commit()
+            logger.info(f"Deleted {len(segment_ids)} segment(s) from DB")
 
     # ── Settings operations ─────────────────────────────────────────────
 
@@ -179,34 +188,37 @@ class DatabaseManager:
             }
 
     async def set_primary_channel(self, guild_id: int, channel_id: int):
-        await self.connection.execute(
-            """INSERT INTO recording_settings(guild_id, primary_channel_id)
-               VALUES (?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET primary_channel_id=excluded.primary_channel_id""",
-            (guild_id, channel_id),
-        )
-        await self.connection.commit()
-        logger.info(f"Primary channel set: guild={guild_id} channel={channel_id}")
+        async with self._lock:
+            await self.connection.execute(
+                """INSERT INTO recording_settings(guild_id, primary_channel_id)
+                   VALUES (?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET primary_channel_id=excluded.primary_channel_id""",
+                (guild_id, channel_id),
+            )
+            await self.connection.commit()
+            logger.info(f"Primary channel set: guild={guild_id} channel={channel_id}")
 
     async def set_retention_days(self, guild_id: int, days: int):
-        await self.connection.execute(
-            """INSERT INTO recording_settings(guild_id, retention_days)
-               VALUES (?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET retention_days=excluded.retention_days""",
-            (guild_id, days),
-        )
-        await self.connection.commit()
-        logger.info(f"Retention set: guild={guild_id} days={days}")
+        async with self._lock:
+            await self.connection.execute(
+                """INSERT INTO recording_settings(guild_id, retention_days)
+                   VALUES (?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET retention_days=excluded.retention_days""",
+                (guild_id, days),
+            )
+            await self.connection.commit()
+            logger.info(f"Retention set: guild={guild_id} days={days}")
 
     # ── Transcription operations ───────────────────────────────────────
 
     async def set_segment_transcript(self, segment_id: int, transcript: str):
-        await self.connection.execute(
-            "UPDATE segments SET transcript=? WHERE id=?",
-            (transcript, segment_id),
-        )
-        await self.connection.commit()
-        logger.debug(f"Transcript saved: segment={segment_id} length={len(transcript)}")
+        async with self._lock:
+            await self.connection.execute(
+                "UPDATE segments SET transcript=? WHERE id=?",
+                (transcript, segment_id),
+            )
+            await self.connection.commit()
+            logger.debug(f"Transcript saved: segment={segment_id} length={len(transcript)}")
 
     async def get_segment_transcript(self, segment_id: int) -> str | None:
         rows = await self.connection.execute(

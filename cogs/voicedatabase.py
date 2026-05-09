@@ -7,8 +7,9 @@ import asyncio
 import os
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
-EST = timezone(timedelta(hours=-4))
+EASTERN = ZoneInfo("America/New_York")
 
 import discord
 from discord import app_commands
@@ -315,7 +316,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -430,7 +431,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -496,7 +497,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EST)
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -567,7 +568,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            start_time = datetime.fromisoformat(start).replace(tzinfo=EST)
+            start_time = datetime.fromisoformat(start).replace(tzinfo=EASTERN)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -960,7 +961,7 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
             return
 
-        start_time = datetime.fromtimestamp(self.seg[4], tz=EST)
+        start_time = datetime.fromtimestamp(self.seg[4], tz=EASTERN)
 
         clip_path = await self.cog.retriever.retrieve_clip(
             user_id=self.target_user.id,
@@ -1019,7 +1020,7 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
         source = discord.FFmpegOpusAudio(clip_path)
         vc.play(source, after=after_play)
 
-        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
         logger.info(f"PlayModal: Playing clip for user {self.target_user.id} at {start_str} ({duration_minutes} min)")
         await interaction.followup.send(
@@ -1099,7 +1100,7 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
 
         await interaction.response.defer()
 
-        start_time = datetime.fromtimestamp(self.seg[4], tz=EST)
+        start_time = datetime.fromtimestamp(self.seg[4], tz=EASTERN)
 
         clip_path = await self.cog.retriever.retrieve_clip(
             user_id=self.target_user.id,
@@ -1136,7 +1137,7 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
                 pass
             return
 
-        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EST)
+        play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
         logger.info(f"DownloadModal: Sending clip for user {self.target_user.id} at {start_str} ({duration_minutes} min, {file_size} bytes)")
         embed = discord.Embed(
@@ -1187,10 +1188,10 @@ class _ClipSelectView(discord.ui.View):
         self.clear_items()
         options = []
         for seg in self._page_segments():
-            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
+            start_dt = datetime.fromtimestamp(seg[4], tz=EASTERN)
             label = start_dt.strftime("%I:%M:%S %p")
             if seg[5] is not None:
-                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
+                end_dt = datetime.fromtimestamp(seg[5], tz=EASTERN)
                 dur = int(seg[5] - seg[4])
                 time_desc = f"→ {end_dt.strftime('%I:%M:%S %p')} ({dur // 60}m {dur % 60}s)"
             else:
@@ -1201,7 +1202,7 @@ class _ClipSelectView(discord.ui.View):
             else:
                 desc = time_desc
             options.append(discord.SelectOption(
-                label=label, description=desc, value=str(int(seg[4])),
+                label=label, description=desc, value=str(seg[0]),
             ))
         placeholder = "Pick a segment to download..." if self.mode == "download" else "Pick a segment to play..."
         select = discord.ui.Select(placeholder=placeholder, options=options)
@@ -1226,9 +1227,9 @@ class _ClipSelectView(discord.ui.View):
             title += f" (Page {self.page + 1}/{self.total_pages})"
         embed = discord.Embed(title=title, color=0x5865F2)
         for seg in self._page_segments():
-            start_dt = datetime.fromtimestamp(seg[4], tz=EST)
+            start_dt = datetime.fromtimestamp(seg[4], tz=EASTERN)
             if seg[5] is not None:
-                end_dt = datetime.fromtimestamp(seg[5], tz=EST)
+                end_dt = datetime.fromtimestamp(seg[5], tz=EASTERN)
                 duration_sec = int(seg[5] - seg[4])
                 duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
                 field_name = f"{start_dt.strftime('%I:%M:%S %p')} → {end_dt.strftime('%I:%M:%S %p')}  ({duration_str})"
@@ -1260,13 +1261,13 @@ class _ClipSelectView(discord.ui.View):
         return True
 
     async def on_select(self, interaction: discord.Interaction):
-        selected_ts = int(interaction.data["values"][0])
-        seg = next((s for s in self.segments if int(s[4]) == selected_ts), None)
+        selected_id = int(interaction.data["values"][0])
+        seg = next((s for s in self.segments if s[0] == selected_id), None)
         if seg is None:
-            logger.warning(f"ClipSelectView: Segment not found for ts={selected_ts}")
+            logger.warning(f"ClipSelectView: Segment not found for id={selected_id}")
             await interaction.response.send_message("Segment not found.", ephemeral=True)
             return
-        logger.debug(f"ClipSelectView: Selected segment id={seg[0]} ts={selected_ts} mode={self.mode}")
+        logger.debug(f"ClipSelectView: Selected segment id={selected_id} mode={self.mode}")
 
         if seg[5] is not None:
             default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))
