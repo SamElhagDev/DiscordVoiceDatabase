@@ -740,10 +740,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await context.send("This command can only be used in a server.")
             return
 
-        if days < 1 or days > 90:
+        if days < 1 or days > 365:
             await context.send(
                 embed=discord.Embed(
-                    description="Retention must be between 1 and 90 days.",
+                    description="Retention must be between 1 and 365 days.",
                     color=0xED4245,
                 )
             )
