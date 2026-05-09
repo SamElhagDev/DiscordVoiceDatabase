@@ -809,7 +809,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     # ── Auto-rejoin loop ────────────────────────────────────────────────
 
-    @tasks.loop(minutes=2.0)
+    @tasks.loop(minutes=10.0)
     async def auto_rejoin_loop(self):
         """
         Periodically check if the bot should auto-join a voice channel.
