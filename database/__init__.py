@@ -260,6 +260,22 @@ class DatabaseManager:
         async with rows as cursor:
             return await cursor.fetchall()
 
+    async def get_talk_time_by_user(self, guild_id: int, since_ts: float = 0.0) -> list:
+        """Return total spoken seconds per user for a guild since since_ts.
+        Returns list of (user_id, total_seconds) ordered by total_seconds DESC.
+        Only counts completed segments (end_ts IS NOT NULL).
+        """
+        rows = await self.connection.execute(
+            """SELECT user_id, SUM(end_ts - start_ts) as total_seconds
+               FROM segments
+               WHERE guild_id=? AND end_ts IS NOT NULL AND start_ts >= ?
+               GROUP BY user_id
+               ORDER BY total_seconds DESC""",
+            (guild_id, since_ts),
+        )
+        async with rows as cursor:
+            return await cursor.fetchall()
+
     async def get_untranscribed_segments(self, guild_id: int = None) -> list:
         """Return all completed segments that have no transcript yet."""
         if guild_id:

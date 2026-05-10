@@ -767,6 +767,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await context.send("This command can only be used in a server.")
             return
 
+        import time as _time
         recorder = self.recorders.get(context.guild.id)
         settings = await self.bot.database.get_settings(context.guild.id)
         participants = await self.bot.database.get_participants(context.guild.id)
@@ -778,6 +779,39 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         primary_ch = None
         if settings["primary_channel_id"]:
             primary_ch = context.guild.get_channel(settings["primary_channel_id"])
+
+        # Fetch talk time stats for past week and all time
+        week_ago = _time.time() - 7 * 86400
+        week_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=week_ago)
+        alltime_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=0.0)
+
+        def _format_duration(seconds: float) -> str:
+            seconds = int(seconds)
+            if seconds < 60:
+                return f"{seconds}s"
+            elif seconds < 3600:
+                return f"{seconds // 60}m {seconds % 60}s"
+            else:
+                h = seconds // 3600
+                m = (seconds % 3600) // 60
+                return f"{h}h {m}m"
+
+        def _build_talk_field(stats: list) -> str:
+            if not stats:
+                return "*No data*"
+            total = sum(s for _, s in stats)
+            if total == 0:
+                return "*No data*"
+            lines = []
+            for user_id, secs in stats:
+                member = context.guild.get_member(user_id)
+                name = member.display_name if member else f"User {user_id}"
+                name = name[:16]  # truncate long names
+                pct = secs / total * 100
+                bar_filled = round(pct / 10)  # 0–10 blocks
+                bar = "█" * bar_filled + "░" * (10 - bar_filled)
+                lines.append(f"`{bar}` **{name}** {_format_duration(secs)} ({pct:.0f}%)")
+            return "\n".join(lines)
 
         embed = discord.Embed(
             title="Recording Status",
@@ -804,6 +838,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             name="Participants",
             value=str(len(participants)),
             inline=True,
+        )
+        embed.add_field(
+            name="🗣️ Share of Voice — Past Week",
+            value=_build_talk_field(week_stats),
+            inline=False,
+        )
+        embed.add_field(
+            name="🗣️ Share of Voice — All Time",
+            value=_build_talk_field(alltime_stats),
+            inline=False,
         )
 
         await context.send(embed=embed)
