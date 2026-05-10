@@ -1210,6 +1210,10 @@ class _ClipSelectView(discord.ui.View):
         self.add_item(select)
 
         if self.total_pages > 1:
+            first_btn = discord.ui.Button(label="⏮ First", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+            first_btn.callback = self._first_page
+            self.add_item(first_btn)
+
             prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
             prev_btn.callback = self._prev_page
             self.add_item(prev_btn)
@@ -1220,6 +1224,10 @@ class _ClipSelectView(discord.ui.View):
             next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
             next_btn.callback = self._next_page
             self.add_item(next_btn)
+
+            last_btn = discord.ui.Button(label="Last ⏭", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+            last_btn.callback = self._last_page
+            self.add_item(last_btn)
 
     def build_embed(self):
         title = f"Recordings for {self.target_user.display_name} on {self.date}"
@@ -1242,6 +1250,11 @@ class _ClipSelectView(discord.ui.View):
         embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action} it")
         return embed
 
+    async def _first_page(self, interaction: discord.Interaction):
+        self.page = 0
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
     async def _prev_page(self, interaction: discord.Interaction):
         self.page = max(0, self.page - 1)
         self._rebuild_items()
@@ -1249,6 +1262,11 @@ class _ClipSelectView(discord.ui.View):
 
     async def _next_page(self, interaction: discord.Interaction):
         self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _last_page(self, interaction: discord.Interaction):
+        self.page = self.total_pages - 1
         self._rebuild_items()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
