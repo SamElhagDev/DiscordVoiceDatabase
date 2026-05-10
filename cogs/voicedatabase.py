@@ -622,10 +622,28 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        # Connect to VC if not already there; reuse existing connection if recording
+        # Connect to VC if not already there; reuse existing connection if recording.
+        # IMPORTANT: never call move_to() while recording is active — that tears down
+        # the VoiceRecvClient and breaks the recording session.
+        recorder = self.recorders.get(context.guild.id)
+        is_recording = recorder is not None
         joined_for_playback = False
         vc = context.guild.voice_client
+
         if vc is None or not vc.is_connected():
+            if is_recording:
+                # Recorder exists but voice_client is gone — inconsistent state.
+                await context.send(
+                    embed=discord.Embed(
+                        description="Recording session lost its voice connection. Use `/stoprecord` then `/record` to restart.",
+                        color=0xED4245,
+                    )
+                )
+                try:
+                    os.remove(clip_path)
+                except OSError:
+                    pass
+                return
             try:
                 vc = await voice_channel.connect()
                 joined_for_playback = True
@@ -642,9 +660,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 except OSError:
                     pass
                 return
-        elif vc.channel != voice_channel:
+        elif not is_recording and vc.channel != voice_channel:
+            # Only move when not recording; moving while recording breaks the session.
             await vc.move_to(voice_channel)
             await asyncio.sleep(1)
+        # If recording is active and user is in a different channel, the clip plays in
+        # the recording channel — the bot does not move.
 
         if vc.is_playing():
             vc.stop()
@@ -659,8 +680,33 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 logger.error(f"Playback error: {error}")
             loop.call_soon_threadsafe(done_event.set)
 
-        source = discord.FFmpegOpusAudio(clip_path)
-        vc.play(source, after=after_play)
+        # Pause the recording sink before playback so the send/receive pipelines
+        # don't interfere with each other inside VoiceRecvClient.
+        if recorder:
+            recorder.pause_listening()
+
+        logger.info(
+            f"play_clip: starting playback user={user.id} recording_active={is_recording} "
+            f"channel=#{vc.channel.name}"
+        )
+        try:
+            source = discord.FFmpegOpusAudio(clip_path)
+            vc.play(source, after=after_play)
+        except Exception as e:
+            logger.error(f"play_clip: vc.play() failed: {e}")
+            if recorder:
+                recorder.resume_listening()
+            await context.send(
+                embed=discord.Embed(
+                    description=f"Failed to start playback: `{e}`",
+                    color=0xED4245,
+                )
+            )
+            try:
+                os.remove(clip_path)
+            except OSError:
+                pass
+            return
 
         await context.send(
             embed=discord.Embed(
@@ -669,7 +715,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
         )
 
-        await done_event.wait()
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=300.0)
+        except asyncio.TimeoutError:
+            logger.warning("play_clip: playback timed out after 300s, stopping")
+            if vc.is_playing():
+                vc.stop()
+
+        # Always resume the recording sink — whether playback succeeded, errored, or timed out.
+        if recorder:
+            recorder.resume_listening()
 
         if playback_error[0]:
             await context.send(
@@ -684,7 +739,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         except OSError:
             pass
 
-        if joined_for_playback:
+        # Never disconnect if the bot was already in the channel for recording.
+        if joined_for_playback and not is_recording:
             await vc.disconnect()
 
     @commands.hybrid_command(
@@ -1027,9 +1083,25 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
             return
 
+        recorder = self.cog.recorders.get(guild.id)
+        is_recording = recorder is not None
         joined_for_playback = False
         vc = guild.voice_client
+
         if vc is None or not vc.is_connected():
+            if is_recording:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="Recording session lost its voice connection. Use `/stoprecord` then `/record` to restart.",
+                        color=0xED4245,
+                    ),
+                    ephemeral=True,
+                )
+                try:
+                    os.remove(clip_path)
+                except OSError:
+                    pass
+                return
             try:
                 vc = await voice_channel.connect()
                 joined_for_playback = True
@@ -1044,9 +1116,12 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
                 except OSError:
                     pass
                 return
-        elif vc.channel != voice_channel:
+        elif not is_recording and vc.channel != voice_channel:
+            # Only move when not recording; moving while recording breaks the session.
             await vc.move_to(voice_channel)
             await asyncio.sleep(1)
+        # If recording is active and user is in a different channel, clip plays in
+        # the recording channel — the bot does not move.
 
         if vc.is_playing():
             vc.stop()
@@ -1061,12 +1136,34 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
                 logger.error(f"Playback error: {error}")
             loop.call_soon_threadsafe(done_event.set)
 
-        source = discord.FFmpegOpusAudio(clip_path)
-        vc.play(source, after=after_play)
+        # Pause the recording sink before playback to avoid send/receive interference.
+        if recorder:
+            recorder.pause_listening()
 
         play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
-        logger.info(f"PlayModal: Playing clip for user {self.target_user.id} at {start_str} ({duration_minutes} min)")
+        logger.info(
+            f"PlayModal: starting playback seg={self.seg[0]} user={self.target_user.id} "
+            f"at {start_str} ({duration_minutes} min) recording_active={is_recording} "
+            f"channel=#{vc.channel.name}"
+        )
+        try:
+            source = discord.FFmpegOpusAudio(clip_path)
+            vc.play(source, after=after_play)
+        except Exception as e:
+            logger.error(f"PlayModal: vc.play() failed: {e}")
+            if recorder:
+                recorder.resume_listening()
+            await interaction.followup.send(
+                embed=discord.Embed(description=f"Failed to start playback: `{e}`", color=0xED4245),
+                ephemeral=True,
+            )
+            try:
+                os.remove(clip_path)
+            except OSError:
+                pass
+            return
+
         await interaction.followup.send(
             embed=discord.Embed(
                 description=f"Playing for {self.target_user.mention} ({start_str}, {duration_minutes} min).",
@@ -1074,7 +1171,16 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
         )
 
-        await done_event.wait()
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=300.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"PlayModal: playback timed out after 300s for segment {self.seg[0]}")
+            if vc.is_playing():
+                vc.stop()
+
+        # Always resume the recording sink — whether playback succeeded, errored, or timed out.
+        if recorder:
+            recorder.resume_listening()
 
         if playback_error[0]:
             await interaction.followup.send(
@@ -1089,7 +1195,8 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
         except OSError:
             pass
 
-        if joined_for_playback:
+        # Never disconnect if the bot was already in the channel for recording.
+        if joined_for_playback and not is_recording:
             await vc.disconnect()
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):

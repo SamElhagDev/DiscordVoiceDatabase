@@ -29,7 +29,8 @@
       "Bash(python -m py_compile recording/cleanup.py)",
       "Bash(python -m py_compile cogs/voicedatabase.py)",
       "Bash(python -m py_compile database/__init__.py)",
-      "Bash(python -m py_compile cogs/voicedatabase.py database/__init__.py)"
+      "Bash(python -m py_compile cogs/voicedatabase.py database/__init__.py)",
+      "Bash(python -m py_compile cogs/voicedatabase.py recording/recorder.py)"
     ]
   }
 }

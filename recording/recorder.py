@@ -264,6 +264,42 @@ class VoiceRecorder:
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
         logger.debug(f"Consent refreshed for guild {self.guild.id}: {old_count} → {len(self.consented_users)} users")
 
+    def pause_listening(self):
+        """Detach the audio sink before clip playback to avoid send/receive interference.
+        Always pair with a resume_listening() call once playback is done."""
+        try:
+            if self.voice_client and self.voice_client.is_listening():
+                self.voice_client.stop_listening()
+                logger.info(
+                    f"Recording paused for clip playback in "
+                    f"{self.guild.name} / #{self.channel.name}"
+                )
+        except Exception as e:
+            logger.warning(f"pause_listening: could not stop sink: {e}")
+
+    def resume_listening(self):
+        """Re-attach a fresh audio sink after clip playback ends.
+        No-op if the recorder has already been stopped."""
+        if not self._running:
+            logger.debug("resume_listening: recorder already stopped, skipping")
+            return
+        try:
+            if self.voice_client and self.voice_client.is_connected():
+                # Create a new sink — the old one may have stale decoder state.
+                sink = _PerUserPCMSink(self.on_audio_packet)
+                self.voice_client.listen(sink)
+                logger.info(
+                    f"Recording resumed after clip playback in "
+                    f"{self.guild.name} / #{self.channel.name}"
+                )
+            else:
+                logger.warning(
+                    "resume_listening: voice_client not connected — "
+                    "recording stays paused until next auto-rejoin"
+                )
+        except Exception as e:
+            logger.warning(f"resume_listening: could not re-attach sink: {e}")
+
     def on_audio_packet(self, user: discord.User, data: bytes):
         if user.id not in self.consented_users:
             return
