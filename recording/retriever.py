@@ -189,7 +189,13 @@ class ClipRetriever:
 
     @staticmethod
     def _trim_single(input_path: str, output_path: str, start_sec: float, duration_sec: float):
-        """Trim a single OGG or PCM file."""
+        """Trim a single OGG or PCM file.
+
+        adeclick is applied to every output clip.  On clean recordings (new
+        code) it is a no-op.  On old recordings (VAD silence-stripped) it
+        smooths the sudden amplitude jumps left behind by concatenated voiced
+        frames, which manifest as clicks or pops during playback.
+        """
         if input_path.endswith(".pcm"):
             cmd = [
                 "ffmpeg", "-y",
@@ -197,6 +203,7 @@ class ClipRetriever:
                 "-i", input_path,
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
+                "-af", "adeclick",
                 "-c:a", "libopus", "-b:a", "48k", "-ac", "1",
                 output_path,
             ]
@@ -206,6 +213,7 @@ class ClipRetriever:
                 "-i", input_path,
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
+                "-af", "adeclick",
                 "-c:a", "libopus",
                 "-b:a", "48k",
                 output_path,
@@ -244,13 +252,15 @@ class ClipRetriever:
                 else:
                     normalized.append(f)
 
-            # Build filter_complex concat — no temp text file needed
+            # Build filter_complex concat — no temp text file needed.
+            # adeclick is chained inside the filter graph (can't mix -af with
+            # -filter_complex in FFmpeg); on clean audio it is effectively a no-op.
             n = len(normalized)
             cmd = ["ffmpeg", "-y"]
             for f in normalized:
                 cmd.extend(["-i", f])
             cmd.extend([
-                "-filter_complex", f"concat=n={n}:v=0:a=1[out]",
+                "-filter_complex", f"concat=n={n}:v=0:a=1[concat];[concat]adeclick[out]",
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),

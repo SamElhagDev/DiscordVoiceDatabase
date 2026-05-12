@@ -66,6 +66,7 @@ class UserStream:
         self.buffer = io.BytesIO()
         self.segment_db_id = None
         self._hangover = 0
+        self._has_voice = False  # True once the first voiced frame has been written
 
         # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
@@ -78,10 +79,13 @@ class UserStream:
         rms = _rms(data)
         if rms >= VAD_RMS_THRESHOLD:
             self._hangover = VAD_HANGOVER_FRAMES
+            self._has_voice = True
             self.buffer.write(data)
         elif self._hangover > 0:
             self._hangover -= 1
             self.buffer.write(data)
+        elif self._has_voice:
+            self.buffer.write(bytes(len(data)))
 
     def flush_to_disk(self) -> str:
         """Write buffer to PCM file and return the path."""
@@ -101,7 +105,9 @@ class UserStream:
 
     @property
     def has_data(self) -> bool:
-        return self.buffer.tell() > 0
+        # Use _has_voice rather than buffer position: a buffer containing only
+        # leading zeros (no voiced frames yet) should not be flushed to disk.
+        return self._has_voice
 
 
 class _PerUserPCMSink(voice_recv.AudioSink):
