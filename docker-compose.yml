@@ -6,9 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      - DB_PATH=/bot/data/database.db
-      - RECORDINGS_PATH=/bot/recordings
-      - CLIPS_PATH=/bot/clips
+      - DiscordVoiceDatabase_DB_PATH=/bot/data/database.db
+      - DiscordVoiceDatabase_RECORDINGS_PATH=/bot/recordings
+      - DiscordVoiceDatabase_CLIPS_PATH=/bot/clips
     volumes:
       # Persistent volumes — survive container restarts and rebuilds
       - bot-data:/bot/data

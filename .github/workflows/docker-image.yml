@@ -73,13 +73,13 @@ jobs:
         run: |
           docker -H $env:REMOTE_DOCKER run -d --name $env:CONTAINER_NAME `
             --restart unless-stopped `
-            -e TOKEN="${{ secrets.TOKEN }}" `
-            -e PREFIX="${{ secrets.PREFIX }}" `
-            -e INVITE_LINK="${{ secrets.INVITE_LINK }}" `
-            -e DB_PATH=/bot/data/database.db `
-            -e RECORDINGS_PATH=/bot/recordings `
-            -e CLIPS_PATH=/bot/clips `
-            -e RETENTION_DAYS=7 `
+            -e DiscordVoiceDatabase_TOKEN="${{ secrets.DiscordVoiceDatabase_TOKEN }}" `
+            -e DiscordVoiceDatabase_PREFIX="${{ secrets.DiscordVoiceDatabase_PREFIX }}" `
+            -e DiscordVoiceDatabase_INVITE_LINK="${{ secrets.DiscordVoiceDatabase_INVITE_LINK }}" `
+            -e DiscordVoiceDatabase_DB_PATH=/bot/data/database.db `
+            -e DiscordVoiceDatabase_RECORDINGS_PATH=/bot/recordings `
+            -e DiscordVoiceDatabase_CLIPS_PATH=/bot/clips `
+            -e DiscordVoiceDatabase_RETENTION_DAYS=7 `
             -v discord-bot-data:/bot/data `
             -v discord-bot-recordings:/bot/recordings `
             -v discord-bot-clips:/bot/clips `

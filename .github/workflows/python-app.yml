@@ -14,14 +14,14 @@ jobs:
       run:
         shell: powershell
     env:
-      APP_ROOT: C:\apps\DiscordVoiceDatabase          # persistent install location
-      APP_TASK: DiscordVoiceDatabase             # Scheduled Task name
-      APP_PORT: 8080                   # if your app uses PORT
-      TOKEN: ${{ secrets.TOKEN }}
-      DB_PATH: C:\apps\DiscordVoiceDatabase\data\database.db
-      RECORDINGS_PATH: C:\apps\DiscordVoiceDatabase\recordings
-      CLIPS_PATH: C:\apps\DiscordVoiceDatabase\clips
-      RETENTION_DAYS: "365"
+      DiscordVoiceDatabase_APP_ROOT: C:\apps\DiscordVoiceDatabase          # persistent install location
+      DiscordVoiceDatabase_APP_TASK: DiscordVoiceDatabase                  # Scheduled Task name
+      DiscordVoiceDatabase_APP_PORT: 8080                                  # if your app uses PORT
+      DiscordVoiceDatabase_TOKEN: ${{ secrets.DiscordVoiceDatabase_TOKEN }}
+      DiscordVoiceDatabase_DB_PATH: C:\apps\DiscordVoiceDatabase\data\database.db
+      DiscordVoiceDatabase_RECORDINGS_PATH: C:\apps\DiscordVoiceDatabase\recordings
+      DiscordVoiceDatabase_CLIPS_PATH: C:\apps\DiscordVoiceDatabase\clips
+      DiscordVoiceDatabase_RETENTION_DAYS: "365"
 
     steps:
       - uses: actions/checkout@v4
@@ -108,16 +108,16 @@ jobs:
       - name: Create data directories
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Path $env:DB_PATH.Replace('\database.db','') -Force | Out-Null
-          New-Item -ItemType Directory -Path $env:RECORDINGS_PATH -Force | Out-Null
-          New-Item -ItemType Directory -Path $env:CLIPS_PATH -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:DiscordVoiceDatabase_DB_PATH.Replace('\database.db','') -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:DiscordVoiceDatabase_RECORDINGS_PATH -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:DiscordVoiceDatabase_CLIPS_PATH -Force | Out-Null
 
       # 1) Copy code to a persistent folder
       - name: Deploy files to persistent folder
         shell: powershell
         run: |
-              New-Item -ItemType Directory -Path $env:APP_ROOT -Force | Out-Null
-              $dst = Join-Path $env:APP_ROOT 'src'
+              New-Item -ItemType Directory -Path $env:DiscordVoiceDatabase_APP_ROOT -Force | Out-Null
+              $dst = Join-Path $env:DiscordVoiceDatabase_APP_ROOT 'src'
               New-Item -ItemType Directory -Path $dst -Force | Out-Null
               robocopy "$env:GITHUB_WORKSPACE" "$dst" /MIR /NFL /NDL /NP /NJH /NJS /XD ".git" ".github" ".venv" "__pycache__" ".pytest_cache" ".mypy_cache" ".vs" ".vscode" "Publish" /XF "Dockerfile" "docker-compose.yml"
               $code = $LASTEXITCODE
@@ -127,7 +127,7 @@ jobs:
       # 2) Create a dedicated venv for runtime and install deps
       - name: Create/Update venv and install requirements
         run: |
-          $venv = Join-Path $env:APP_ROOT '.venv'
+          $venv = Join-Path $env:DiscordVoiceDatabase_APP_ROOT '.venv'
           $venvPy = "$venv\Scripts\python.exe"
 
           # If the venv exists, check its Python is still healthy.
@@ -145,21 +145,21 @@ jobs:
 
           if (-not (Test-Path $venv)) { py -3.10 -m venv $venv }
           & $venvPy -m pip install --upgrade pip wheel
-          if (Test-Path "$env:APP_ROOT\src\requirements.txt") {
-            & $venvPy -m pip install -r "$env:APP_ROOT\src\requirements.txt"
+          if (Test-Path "$env:DiscordVoiceDatabase_APP_ROOT\src\requirements.txt") {
+            & $venvPy -m pip install -r "$env:DiscordVoiceDatabase_APP_ROOT\src\requirements.txt"
           }
 
       - name: Create run-bot.ps1 (no logging)
         shell: powershell
         run: |
-              $app    = "$env:APP_ROOT\src"
-              $venvPy = "$env:APP_ROOT\.venv\Scripts\python.exe"
+              $app    = "$env:DiscordVoiceDatabase_APP_ROOT\src"
+              $venvPy = "$env:DiscordVoiceDatabase_APP_ROOT\.venv\Scripts\python.exe"
               $lines = @()
               $lines += "`$ErrorActionPreference = 'Continue'"
               $lines += "Set-Location '$app'"
-              $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:APP_PORT' }"
-              # Fallback: only load .env if TOKEN not already present
-              $lines += 'if (-not $env:TOKEN -and (Test-Path ".env")) {'
+              $lines += "if (-not `$env:PORT) { `$env:PORT = '$env:DiscordVoiceDatabase_APP_PORT' }"
+              # Fallback: only load .env if DiscordVoiceDatabase_TOKEN not already present
+              $lines += 'if (-not $env:DiscordVoiceDatabase_TOKEN -and (Test-Path ".env")) {'
               $lines += '  Get-Content ".env" | ForEach-Object {'
               $lines += "    if (`$_ -match '^\s*#') { return }"
               $lines += "    if (`$_ -match '^\s*$') { return }"
@@ -167,64 +167,60 @@ jobs:
               $lines += '    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())'
               $lines += '  }'
               $lines += '}'
-              # Optional: fail fast if TOKEN still missing (helps diagnostics)
               $lines += "$venvPy -u bot.py"
-              Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
+              Set-Content -Path "$env:DiscordVoiceDatabase_APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
 
-      # Put the secret into the machine environment
-      - name: Set TOKEN as machine env var
+      # Put the secrets into the machine environment so the Scheduled Task can read them
+      - name: Set DiscordVoiceDatabase_TOKEN as machine env var
         shell: powershell
         env:
-          TOKEN: ${{ secrets.TOKEN }}   # your Discord bot token secret
+          DiscordVoiceDatabase_TOKEN: ${{ secrets.DiscordVoiceDatabase_TOKEN }}
         run: |
-              if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
-              setx TOKEN "$env:TOKEN" /M | Out-Null
-              # verify it's in the machine scope now
-              $m = [Environment]::GetEnvironmentVariable('TOKEN','Machine')
-              if (-not $m) { throw "Failed to set machine env var TOKEN." }
+              if (-not $env:DiscordVoiceDatabase_TOKEN) { throw "Secret DiscordVoiceDatabase_TOKEN is missing. Add it in Settings → Secrets → Actions." }
+              setx DiscordVoiceDatabase_TOKEN "$env:DiscordVoiceDatabase_TOKEN" /M | Out-Null
+              $m = [Environment]::GetEnvironmentVariable('DiscordVoiceDatabase_TOKEN','Machine')
+              if (-not $m) { throw "Failed to set machine env var DiscordVoiceDatabase_TOKEN." }
 
-      - name: Set PREFIX as machine env var
+      - name: Set DiscordVoiceDatabase_PREFIX as machine env var
         shell: powershell
         env:
-          PREFIX: ${{ secrets.PREFIX }}   # your Discord bot token secret
+          DiscordVoiceDatabase_PREFIX: ${{ secrets.DiscordVoiceDatabase_PREFIX }}
         run: |
-              if (-not $env:PREFIX) { throw "Secret PREFIX is missing. Add it in Settings → Secrets → Actions." }
-              setx PREFIX "$env:PREFIX" /M | Out-Null
-              # verify it's in the machine scope now
-              $m = [Environment]::GetEnvironmentVariable('PREFIX','Machine')
-              if (-not $m) { throw "Failed to set machine env var PREFIX." }
+              if (-not $env:DiscordVoiceDatabase_PREFIX) { throw "Secret DiscordVoiceDatabase_PREFIX is missing. Add it in Settings → Secrets → Actions." }
+              setx DiscordVoiceDatabase_PREFIX "$env:DiscordVoiceDatabase_PREFIX" /M | Out-Null
+              $m = [Environment]::GetEnvironmentVariable('DiscordVoiceDatabase_PREFIX','Machine')
+              if (-not $m) { throw "Failed to set machine env var DiscordVoiceDatabase_PREFIX." }
 
-      - name: Set INVITE_LINK as machine env var
+      - name: Set DiscordVoiceDatabase_INVITE_LINK as machine env var
         shell: powershell
         env:
-          INVITE_LINK: ${{ secrets.INVITE_LINK }}   # your Discord bot token secret
+          DiscordVoiceDatabase_INVITE_LINK: ${{ secrets.DiscordVoiceDatabase_INVITE_LINK }}
         run: |
-              if (-not $env:INVITE_LINK) { throw "Secret INVITE_LINK is missing. Add it in Settings → Secrets → Actions." }
-              setx INVITE_LINK "$env:INVITE_LINK" /M | Out-Null
-              # verify it's in the machine scope now
-              $m = [Environment]::GetEnvironmentVariable('INVITE_LINK','Machine')
-              if (-not $m) { throw "Failed to set machine env var INVITE_LINK." }
+              if (-not $env:DiscordVoiceDatabase_INVITE_LINK) { throw "Secret DiscordVoiceDatabase_INVITE_LINK is missing. Add it in Settings → Secrets → Actions." }
+              setx DiscordVoiceDatabase_INVITE_LINK "$env:DiscordVoiceDatabase_INVITE_LINK" /M | Out-Null
+              $m = [Environment]::GetEnvironmentVariable('DiscordVoiceDatabase_INVITE_LINK','Machine')
+              if (-not $m) { throw "Failed to set machine env var DiscordVoiceDatabase_INVITE_LINK." }
 
       - name: Set recording paths as machine env vars
         shell: powershell
         run: |
-              setx DB_PATH "$env:DB_PATH" /M | Out-Null
-              setx RECORDINGS_PATH "$env:RECORDINGS_PATH" /M | Out-Null
-              setx CLIPS_PATH "$env:CLIPS_PATH" /M | Out-Null
-              setx RETENTION_DAYS "$env:RETENTION_DAYS" /M | Out-Null
+              setx DiscordVoiceDatabase_DB_PATH "$env:DiscordVoiceDatabase_DB_PATH" /M | Out-Null
+              setx DiscordVoiceDatabase_RECORDINGS_PATH "$env:DiscordVoiceDatabase_RECORDINGS_PATH" /M | Out-Null
+              setx DiscordVoiceDatabase_CLIPS_PATH "$env:DiscordVoiceDatabase_CLIPS_PATH" /M | Out-Null
+              setx DiscordVoiceDatabase_RETENTION_DAYS "$env:DiscordVoiceDatabase_RETENTION_DAYS" /M | Out-Null
 
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)
         shell: powershell
         run: |
-              $name = $env:APP_TASK
+              $name = $env:DiscordVoiceDatabase_APP_TASK
               if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
               try { (Get-ScheduledTask -TaskName $name -ErrorAction Stop) | Stop-ScheduledTask -ErrorAction SilentlyContinue } catch {}
               } else {
               schtasks /end /tn $name 2>$null | Out-Null
               }
               # kill stray python from our app dir just in case
-              $appDir = Join-Path $env:APP_ROOT 'src'
+              $appDir = Join-Path $env:DiscordVoiceDatabase_APP_ROOT 'src'
               Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
               Where-Object { $_.CommandLine -match 'bot\.py' -and $_.CommandLine -match [regex]::Escape($appDir) } |
               ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
@@ -233,20 +229,20 @@ jobs:
       - name: Register/Start Scheduled Task
         run: |
           $exe  = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-          $args = "-NoProfile -ExecutionPolicy Bypass -File `"$env:APP_ROOT\run-bot.ps1`""
-          $action    = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $env:APP_ROOT
+          $args = "-NoProfile -ExecutionPolicy Bypass -File `"$env:DiscordVoiceDatabase_APP_ROOT\run-bot.ps1`""
+          $action    = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $env:DiscordVoiceDatabase_APP_ROOT
           $trigger   = New-ScheduledTaskTrigger -AtStartup
           $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
           $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                                                     -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
-          if (Get-ScheduledTask -TaskName $env:APP_TASK -ErrorAction SilentlyContinue) {
-            schtasks /end /tn $env:APP_TASK 2>$null | Out-Null
-            Unregister-ScheduledTask -TaskName $env:APP_TASK -Confirm:$false
+          if (Get-ScheduledTask -TaskName $env:DiscordVoiceDatabase_APP_TASK -ErrorAction SilentlyContinue) {
+            schtasks /end /tn $env:DiscordVoiceDatabase_APP_TASK 2>$null | Out-Null
+            Unregister-ScheduledTask -TaskName $env:DiscordVoiceDatabase_APP_TASK -Confirm:$false
           }
-          Register-ScheduledTask -TaskName $env:APP_TASK -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
+          Register-ScheduledTask -TaskName $env:DiscordVoiceDatabase_APP_TASK -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
           # Fire it and return immediately (non-blocking)
-          schtasks /run /tn $env:APP_TASK | Out-Null
+          schtasks /run /tn $env:DiscordVoiceDatabase_APP_TASK | Out-Null
 
       # 6) (Optional) show status; logs are at C:\ProgramData\mybot.log
       - name: Task status
-        run: schtasks /query /tn $env:APP_TASK /v /fo LIST
+        run: schtasks /query /tn $env:DiscordVoiceDatabase_APP_TASK /v /fo LIST

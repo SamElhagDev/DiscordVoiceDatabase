@@ -16,9 +16,9 @@ load_dotenv()
 
 # Configurable paths — override via .env or environment variables
 # Defaults work for both Windows direct-run and Docker
-DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "database.db"))
-RECORDINGS_PATH = os.getenv("RECORDINGS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings"))
-CLIPS_PATH = os.getenv("CLIPS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips"))
+DB_PATH = os.getenv("DiscordVoiceDatabase_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "database.db"))
+RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings"))
+CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips"))
 
 # Ensure directories exist
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -96,14 +96,14 @@ logger.addHandler(file_handler)
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(
-            command_prefix=commands.when_mentioned_or(os.getenv("PREFIX", "!")),
+            command_prefix=commands.when_mentioned_or(os.getenv("DiscordVoiceDatabase_PREFIX", "!")),
             intents=intents,
             help_command=None,
         )
         self.logger = logger
         self.database = None
-        self.bot_prefix = os.getenv("PREFIX", "!")
-        self.invite_link = os.getenv("INVITE_LINK", "")
+        self.bot_prefix = os.getenv("DiscordVoiceDatabase_PREFIX", "!")
+        self.invite_link = os.getenv("DiscordVoiceDatabase_INVITE_LINK", "")
 
     async def init_db(self) -> None:
         self.logger.info("Initializing database schema...")
@@ -263,4 +263,4 @@ class DiscordBot(commands.Bot):
 
 
 bot = DiscordBot()
-bot.run(os.getenv("TOKEN"))
+bot.run(os.getenv("DiscordVoiceDatabase_TOKEN"))

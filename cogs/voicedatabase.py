@@ -23,9 +23,9 @@ from recording.transcriber import Transcriber
 
 logger = logging.getLogger("discord_bot")
 
-RECORDINGS_PATH = os.getenv("RECORDINGS_PATH", "recordings")
-CLIPS_PATH = os.getenv("CLIPS_PATH", "clips")
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
+RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", "recordings")
+CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", "clips")
+RETENTION_DAYS = int(os.getenv("DiscordVoiceDatabase_RETENTION_DAYS", "7"))
 
 
 class VoiceDatabase(commands.Cog, name="voicedatabase"):

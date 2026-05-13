@@ -30,7 +30,9 @@
       "Bash(python -m py_compile cogs/voicedatabase.py)",
       "Bash(python -m py_compile database/__init__.py)",
       "Bash(python -m py_compile cogs/voicedatabase.py database/__init__.py)",
-      "Bash(python -m py_compile cogs/voicedatabase.py recording/recorder.py)"
+      "Bash(python -m py_compile cogs/voicedatabase.py recording/recorder.py)",
+      "Bash(python -m py_compile bot.py cogs/voicedatabase.py recording/cleanup.py)",
+      "PowerShell(cd \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\"; $files = @\\('bot.py','cogs/voicedatabase.py','recording/cleanup.py','.env','.env.example','docker-compose.yml','.github/workflows/python-app.yml','.github/workflows/docker-image.yml'\\); foreach \\($f in $files\\) { \\(Get-Content $f -Raw\\) -replace 'DISCORDVOICEDATABASE_','DiscordVoiceDatabase_' | Set-Content $f -NoNewline }; Write-Host \"Done\")"
     ]
   }
 }

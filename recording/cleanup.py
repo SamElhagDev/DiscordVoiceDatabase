@@ -9,7 +9,7 @@ import os
 logger = logging.getLogger("discord_bot")
 
 
-RECORDINGS_PATH = os.path.abspath(os.getenv("RECORDINGS_PATH", "recordings"))
+RECORDINGS_PATH = os.path.abspath(os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", "recordings"))
 
 
 class SegmentCleanup:
