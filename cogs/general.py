@@ -3,6 +3,81 @@ from discord.ext import commands
 from discord.ext.commands import Context
 
 
+# Per-command icons and short display descriptions.
+# Descriptions here are intentionally shorter than the slash command descriptions,
+# which need to be verbose for Discord's autocomplete tooltip.
+_ICONS = {
+    "join":            "✅",
+    "leave":           "🚫",
+    "participants":    "👥",
+    "record":          "⏺️",
+    "stoprecord":      "⏹️",
+    "recordingstatus": "📊",
+    "setchannel":      "📌",
+    "retention":       "🗓️",
+    "listclips":       "📋",
+    "playclip":        "▶️",
+    "clip":            "💾",
+    "search":          "🔍",
+    "stop":            "🛑",
+    "transcribe":      "📝",
+    "help":            "❓",
+    "ping":            "🏓",
+    "sync":            "🔄",
+    "unsync":          "🔇",
+    "load":            "📦",
+    "unload":          "📤",
+    "reload":          "🔁",
+    "shutdown":        "🔌",
+}
+
+_DESCS = {
+    "join":            "Opt in to voice recording",
+    "leave":           "Opt out of recording",
+    "participants":    "List opted-in members",
+    "record":          "Start recording",
+    "stoprecord":      "Stop recording & disconnect",
+    "recordingstatus": "Recording status & talk-time stats",
+    "setchannel":      "Set primary auto-join channel",
+    "retention":       "Set how long recordings are kept",
+    "listclips":       "Browse recorded segments by date",
+    "playclip":        "Play a clip in voice chat",
+    "clip":            "Download a clip",
+    "search":          "Search recordings by transcript",
+    "stop":            "Stop current playback",
+    "transcribe":      "Backfill missing transcripts",
+    "help":            "Show this menu",
+    "ping":            "Check bot latency",
+    "sync":            "Sync slash commands (global or guild)",
+    "unsync":          "Remove slash commands",
+    "load":            "Load a cog",
+    "unload":          "Unload a cog",
+    "reload":          "Reload a cog",
+    "shutdown":        "Shut down the bot",
+}
+
+# Voice database sections — order matters for Discord's inline column layout.
+# (title, [command names], inline)
+# Layout produced:
+#   Row 1 │ 👥 Participation  │ ⏺️ Recording          │
+#   Row 2 │ 🎵 Playback (full width)                   │
+#   Row 3 │ ⚙️ Settings       │ 📝 Transcription │ 🔧 General │
+#   Row 4 │ 👑 Owner (full width, owner-only)           │
+_VDB_SECTIONS = [
+    ("👥  Participation", ["join", "leave", "participants"],           True),
+    ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"], True),
+    ("🎵  Playback",      ["listclips", "playclip", "clip", "search", "stop"], False),
+    ("⚙️  Settings",      ["setchannel", "retention"],                 True),
+    ("📝  Transcription", ["transcribe"],                              True),
+]
+
+
+def _fmt_line(prefix: str, name: str, cmd) -> str:
+    icon = _ICONS.get(name, "•")
+    desc = _DESCS.get(name, cmd.description.partition("\n")[0])
+    return f"{icon} `{prefix}{name}` — {desc}"
+
+
 class General(commands.Cog, name="general"):
     def __init__(self, bot) -> None:
         self.bot = bot
@@ -13,70 +88,43 @@ class General(commands.Cog, name="general"):
     async def help(self, context: Context) -> None:
         prefix = self.bot.bot_prefix
 
-        COMMAND_ICONS = {
-            "join":        "✅",
-            "leave":       "🚫",
-            "participants":"👥",
-            "record":      "⏺️",
-            "stoprecord":  "⏹️",
-            "listclips":   "📋",
-            "playclip":    "▶️",
-            "clip":        "💾",
-            "transcribe":  "📝",
-            "search":      "🔍",
-            "stop":        "⏹️",
-            "help":        "❓",
-            "ping":        "🏓",
-        }
-
-        # Group voicedatabase commands into sub-sections to stay under 1024 char limit
-        VOICEDB_SECTIONS = {
-            "👥 Participation": ["join", "leave", "participants"],
-            "⏺️ Recording":     ["record", "stoprecord"],
-            "🎵 Playback":      ["listclips", "playclip", "clip", "stop", "search"],
-            "📝 Transcription": ["transcribe"],
-        }
-
         embed = discord.Embed(
-            title="📖  Voice Database — Command Reference",
-            description=f"Use `{prefix}<command>` or `/<command>` for any command below.",
+            title="📖  Voice Database — Commands",
+            description=f"Use `{prefix}command` or `/command` — all commands support both.",
             color=0x5865F2,
         )
 
-        for cog_name in self.bot.cogs:
-            if cog_name == "owner" and not (await self.bot.is_owner(context.author)):
-                continue
-            cog = self.bot.get_cog(cog_name.lower())
-            cog_commands = {cmd.name: cmd for cmd in cog.get_commands()}
-            if not cog_commands:
-                continue
+        # ── Voice Database sections (explicit order) ────────────────────
+        vdb = self.bot.get_cog("voicedatabase")
+        if vdb:
+            vdb_cmds = {cmd.name: cmd for cmd in vdb.get_commands()}
+            for title, names, inline in _VDB_SECTIONS:
+                lines = [
+                    _fmt_line(prefix, n, vdb_cmds[n])
+                    for n in names
+                    if n in vdb_cmds
+                ]
+                if lines:
+                    embed.add_field(name=title, value="\n".join(lines), inline=inline)
 
-            if cog_name.lower() == "voicedatabase":
-                for section_name, cmd_names in VOICEDB_SECTIONS.items():
-                    lines = []
-                    for name in cmd_names:
-                        cmd = cog_commands.get(name)
-                        if cmd is None:
-                            continue
-                        icon = COMMAND_ICONS.get(name, "•")
-                        desc = cmd.description.partition("\n")[0]
-                        lines.append(f"{icon} **`{prefix}{name}`** — {desc}")
-                    if lines:
-                        embed.add_field(name=section_name, value="\n".join(lines), inline=False)
-            else:
-                section_icon = "🔧" if cog_name.lower() == "general" else "👑"
-                lines = []
-                for name, cmd in cog_commands.items():
-                    icon = COMMAND_ICONS.get(name, "•")
-                    desc = cmd.description.partition("\n")[0]
-                    lines.append(f"{icon} **`{prefix}{name}`** — {desc}")
-                embed.add_field(
-                    name=f"{section_icon}  {cog_name.capitalize()}",
-                    value="\n".join(lines),
-                    inline=False,
-                )
+        # ── General (inline=True → sits in 3rd column of the Settings row) ──
+        gen = self.bot.get_cog("general")
+        if gen:
+            gen_cmds = {cmd.name: cmd for cmd in gen.get_commands()}
+            lines = [_fmt_line(prefix, n, c) for n, c in gen_cmds.items()]
+            if lines:
+                embed.add_field(name="🔧  General", value="\n".join(lines), inline=True)
 
-        embed.set_footer(text="Slash commands are also supported for all commands above.")
+        # ── Owner (full-width, only shown to the bot owner) ─────────────
+        if await self.bot.is_owner(context.author):
+            owner = self.bot.get_cog("owner")
+            if owner:
+                owner_cmds = {cmd.name: cmd for cmd in owner.get_commands()}
+                lines = [_fmt_line(prefix, n, c) for n, c in owner_cmds.items()]
+                if lines:
+                    embed.add_field(name="👑  Owner", value="\n".join(lines), inline=False)
+
+        embed.set_footer(text="💡  Slash commands support parameter hints and autocomplete.")
         await context.send(embed=embed)
 
     @commands.hybrid_command(
