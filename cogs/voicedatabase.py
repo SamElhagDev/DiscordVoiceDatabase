@@ -27,6 +27,36 @@ RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", "recordings"
 CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", "clips")
 RETENTION_DAYS = int(os.getenv("DiscordVoiceDatabase_RETENTION_DAYS", "7"))
 
+# Chime WAV files — played on recording start/stop and clip playback boundaries.
+# Paths are resolved relative to the project root (one level above this cog).
+_BOT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHIME_START = os.path.join(_BOT_ROOT, "assets", "chimes", "start.wav")
+CHIME_END   = os.path.join(_BOT_ROOT, "assets", "chimes", "end.wav")
+
+async def _play_chime(vc: discord.VoiceClient, path: str) -> None:
+    """Play a short WAV chime on *vc* and await its completion."""
+    if not vc or not vc.is_connected() or not os.path.exists(path):
+        return
+    if vc.is_playing():
+        return  # never interrupt an ongoing clip with a chime
+    loop = asyncio.get_running_loop()
+    done = asyncio.Event()
+
+    def _after(err):
+        if err:
+            logger.debug(f"Chime playback error ({os.path.basename(path)}): {err}")
+        loop.call_soon_threadsafe(done.set)
+
+    try:
+        vc.play(discord.FFmpegPCMAudio(path), after=_after)
+        await asyncio.wait_for(done.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.debug(f"Chime timed out: {path}")
+        if vc.is_playing():
+            vc.stop()
+    except Exception as e:
+        logger.debug(f"Chime play failed ({os.path.basename(path)}): {e}")
+
 
 class VoiceDatabase(commands.Cog, name="voicedatabase"):
     def __init__(self, bot) -> None:
@@ -253,6 +283,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.recorders[context.guild.id] = recorder
         logger.info(f"/record: Recording active in #{channel.name} (segment_dur={settings['segment_duration_sec']}s)")
 
+        # Play start chime — briefly pauses the sink so send/recv don't conflict.
+        recorder.pause_listening()
+        await _play_chime(vc, CHIME_START)
+        recorder.resume_listening()
+
         await context.send(
             embed=discord.Embed(
                 description=f"Recording started in **{channel.name}**.",
@@ -281,7 +316,11 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
+        vc = context.guild.voice_client
         await recorder.stop()
+
+        # Play end chime — recorder's sink is already detached; VC still connected.
+        await _play_chime(vc, CHIME_END)
 
         # Disconnect from voice
         if context.guild.voice_client:
@@ -685,6 +724,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         if recorder:
             recorder.pause_listening()
 
+        # Start chime — signals the clip is about to begin.
+        await _play_chime(vc, CHIME_START)
+
         logger.info(
             f"play_clip: starting playback user={user.id} recording_active={is_recording} "
             f"channel=#{vc.channel.name}"
@@ -721,6 +763,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             logger.warning("play_clip: playback timed out after 300s, stopping")
             if vc.is_playing():
                 vc.stop()
+
+        # End chime — signals the clip has finished.
+        await _play_chime(vc, CHIME_END)
 
         # Always resume the recording sink — whether playback succeeded, errored, or timed out.
         if recorder:
@@ -961,6 +1006,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 logger.info(
                     f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
                 )
+                recorder.pause_listening()
+                await _play_chime(vc, CHIME_START)
+                recorder.resume_listening()
             except Exception as e:
                 logger.error(f"Auto-join failed for {guild.name}: {e}")
 
@@ -995,9 +1043,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         if not active_consented:
             # No consented users left — stop recording
+            vc = member.guild.voice_client
             recorder = self.recorders.pop(guild_id, None)
             if recorder:
                 await recorder.stop()
+            # Play end chime while still connected, then leave.
+            await _play_chime(vc, CHIME_END)
             if member.guild.voice_client:
                 await member.guild.voice_client.disconnect(force=True)
             logger.info(
@@ -1140,6 +1191,9 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
         if recorder:
             recorder.pause_listening()
 
+        # Start chime — signals the clip is about to begin.
+        await _play_chime(vc, CHIME_START)
+
         play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
         logger.info(
@@ -1177,6 +1231,9 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             logger.warning(f"PlayModal: playback timed out after 300s for segment {self.seg[0]}")
             if vc.is_playing():
                 vc.stop()
+
+        # End chime — signals the clip has finished.
+        await _play_chime(vc, CHIME_END)
 
         # Always resume the recording sink — whether playback succeeded, errored, or timed out.
         if recorder:
