@@ -38,9 +38,16 @@ CHANNELS = 2
 SAMPLE_WIDTH = 2  # 16-bit
 BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
 
-# Voice Activity Detection settings
-VAD_RMS_THRESHOLD = 150  # RMS amplitude below this is considered silence
-VAD_HANGOVER_FRAMES = 25  # keep recording for ~500ms after speech stops (20ms frames)
+# Voice Activity Detection settings — both are configurable via env vars so you
+# can tune without redeploying.
+#
+VAD_RMS_THRESHOLD = int(os.getenv("DiscordVoiceDatabase_VAD_THRESHOLD", "150"))
+_VAD_HANGOVER_MS  = int(os.getenv("DiscordVoiceDatabase_VAD_HANGOVER_MS", "1000"))
+VAD_HANGOVER_FRAMES = max(1, _VAD_HANGOVER_MS // 20)  # 1 frame = 20 ms
+
+# Fade-in applied to the first PCM frame after resuming from zero-padded silence.
+
+_FADE_IN_SAMPLES = 192
 
 
 def _rms(pcm_data: bytes) -> float:
@@ -55,6 +62,34 @@ def _rms(pcm_data: bytes) -> float:
     return math.sqrt(sum(s * s for s in samples) / n_samples)
 
 
+def _fade_in_pcm(data: bytes) -> bytes:
+    """Apply a short linear fade-in to a stereo 16-bit LE PCM frame.
+    """
+    n = min(_FADE_IN_SAMPLES, len(data) // (CHANNELS * SAMPLE_WIDTH))
+    if n == 0:
+        return data
+    if _np is not None:
+        arr = _np.frombuffer(data, dtype="<i2").copy()
+        # gains shape: (n,) — one value per stereo sample pair
+        gains = _np.linspace(0.0, 1.0, n, endpoint=False, dtype=_np.float32)
+        # arr layout: [L0, R0, L1, R1, ...] — broadcast gain across both channels
+        arr[: n * CHANNELS] = (
+            (arr[: n * CHANNELS].reshape(n, CHANNELS) * gains[:, None])
+            .reshape(-1)
+            .astype("<i2")
+        )
+        return arr.tobytes()
+    # Pure-Python fallback
+    out = bytearray(data)
+    for i in range(n):
+        gain = i / _FADE_IN_SAMPLES
+        for ch in range(CHANNELS):
+            pos = (i * CHANNELS + ch) * SAMPLE_WIDTH
+            s = struct.unpack_from("<h", out, pos)[0]
+            struct.pack_into("<h", out, pos, int(s * gain))
+    return bytes(out)
+
+
 class UserStream:
     """Tracks a single user's current recording segment."""
 
@@ -66,7 +101,8 @@ class UserStream:
         self.buffer = io.BytesIO()
         self.segment_db_id = None
         self._hangover = 0
-        self._has_voice = False  # True once the first voiced frame has been written
+        self._has_voice = False    # True once the first voiced frame has been written
+        self._tail_is_zero = False  # True while zero-padding silence after hangover expires
 
         # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
@@ -79,12 +115,17 @@ class UserStream:
         rms = _rms(data)
         if rms >= VAD_RMS_THRESHOLD:
             self._hangover = VAD_HANGOVER_FRAMES
+            if self._tail_is_zero:
+                data = _fade_in_pcm(data)
             self._has_voice = True
+            self._tail_is_zero = False
             self.buffer.write(data)
         elif self._hangover > 0:
             self._hangover -= 1
+            self._tail_is_zero = False
             self.buffer.write(data)
         elif self._has_voice:
+            self._tail_is_zero = True
             self.buffer.write(bytes(len(data)))
 
     def flush_to_disk(self) -> str:
