@@ -1026,13 +1026,19 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         after: discord.VoiceState,
     ):
         """Auto-disconnect if all consented users leave the channel."""
+        if member.bot:
+            return
+
         guild_id = member.guild.id
         recorder = self.recorders.get(guild_id)
         if recorder is None:
             return
 
-        # Check if the channel still has consented users
         channel = recorder.channel
+
+        if before.channel != channel:
+            return
+
         consented = recorder.consented_users
         members_in_channel = {m.id for m in channel.members if not m.bot}
         active_consented = consented & members_in_channel

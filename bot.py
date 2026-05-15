@@ -92,6 +92,17 @@ file_handler.setFormatter(file_handler_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
+_lib_file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
+_lib_file_handler.setFormatter(file_handler_formatter)
+
+_voice_logger = logging.getLogger("discord.voice_client")
+_voice_logger.setLevel(logging.DEBUG)
+_voice_logger.addHandler(_lib_file_handler)
+
+_gateway_logger = logging.getLogger("discord.gateway")
+_gateway_logger.setLevel(logging.WARNING)
+_gateway_logger.addHandler(_lib_file_handler)
+
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
