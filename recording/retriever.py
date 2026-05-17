@@ -191,19 +191,21 @@ class ClipRetriever:
     # regions have a natural noise floor rather than a hard gate to zero.
     _COMFORT_NOISE = "anoisesrc=r=48000:amplitude=0.001,aformat=channel_layouts=mono"
     _NOISE_MIX = "amix=inputs=2:weights=1 1:normalize=0:duration=shortest"
+    _COMPAND = "compand=attacks=0.02:decays=0.3:points=-80/-80|-55/-45|-30/-20|0/0:soft-knee=3"
 
     @staticmethod
     def _trim_single(input_path: str, output_path: str, start_sec: float, duration_sec: float):
         """Trim a single OGG or PCM file with adeclick and comfort noise."""
         _cn = ClipRetriever._COMFORT_NOISE
         _nm = ClipRetriever._NOISE_MIX
+        _cp = ClipRetriever._COMPAND
         if input_path.endswith(".pcm"):
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "s16le", "-ar", "48000", "-ac", "2",
                 "-i", input_path,
                 "-filter_complex",
-                f"[0:a]adeclick,aformat=channel_layouts=mono[clean];{_cn}[noise];[clean][noise]{_nm}[out]",
+                f"[0:a]adeclick,aformat=channel_layouts=mono[clean];{_cn}[noise];[clean][noise]{_nm}[mixed];[mixed]{_cp}[out]",
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
@@ -215,7 +217,7 @@ class ClipRetriever:
                 "ffmpeg", "-y",
                 "-i", input_path,
                 "-filter_complex",
-                f"[0:a]adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[out]",
+                f"[0:a]adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[mixed];[mixed]{_cp}[out]",
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
@@ -275,7 +277,8 @@ class ClipRetriever:
                 _prev = _label
             _cn = ClipRetriever._COMFORT_NOISE
             _nm = ClipRetriever._NOISE_MIX
-            _parts.append(f"{_prev}adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[out]")
+            _cp = ClipRetriever._COMPAND
+            _parts.append(f"{_prev}adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[mixed];[mixed]{_cp}[out]")
             filter_graph = ";".join(_parts)
 
             cmd.extend([
