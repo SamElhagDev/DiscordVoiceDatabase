@@ -442,9 +442,9 @@ class VoiceRecorder:
             "-ac", str(CHANNELS),
             "-i", pcm_path,
             "-c:a", "libopus",
-            "-b:a", "48k",  # low bitrate, mono-equivalent for voice
-            "-ac", "1",     # downmix to mono to save space
-            "-application", "voip",
+            "-b:a", "128k",
+            "-ac", "1",
+            "-application", "audio",
             ogg_path,
         ]
         result = subprocess.run(
