@@ -252,15 +252,28 @@ class ClipRetriever:
                 else:
                     normalized.append(f)
 
-            # Build filter_complex concat — no temp text file needed.
-            # adeclick is chained inside the filter graph (can't mix -af with
+            # Build filter_complex with acrossfade chained between each segment.
+            # Hard concat leaves a brief encoder pre-roll glitch at every boundary;
+            # a short crossfade (20 ms) covers it without being audible as an effect.
+            # adeclick is applied after the final crossfade (can't mix -af with
             # -filter_complex in FFmpeg); on clean audio it is effectively a no-op.
             n = len(normalized)
             cmd = ["ffmpeg", "-y"]
             for f in normalized:
                 cmd.extend(["-i", f])
+
+            _xf = "acrossfade=d=0.02:c1=tri:c2=tri"
+            _parts = []
+            _prev = "[0:a]"
+            for _i in range(1, n):
+                _label = f"[x{_i}]"
+                _parts.append(f"{_prev}[{_i}:a]{_xf}{_label}")
+                _prev = _label
+            _parts.append(f"{_prev}adeclick[out]")
+            filter_graph = ";".join(_parts)
+
             cmd.extend([
-                "-filter_complex", f"concat=n={n}:v=0:a=1[concat];[concat]adeclick[out]",
+                "-filter_complex", filter_graph,
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
