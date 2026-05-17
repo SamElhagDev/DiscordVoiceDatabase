@@ -32,7 +32,11 @@
       "Bash(python -m py_compile cogs/voicedatabase.py database/__init__.py)",
       "Bash(python -m py_compile cogs/voicedatabase.py recording/recorder.py)",
       "Bash(python -m py_compile bot.py cogs/voicedatabase.py recording/cleanup.py)",
-      "PowerShell(cd \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\"; $files = @\\('bot.py','cogs/voicedatabase.py','recording/cleanup.py','.env','.env.example','docker-compose.yml','.github/workflows/python-app.yml','.github/workflows/docker-image.yml'\\); foreach \\($f in $files\\) { \\(Get-Content $f -Raw\\) -replace 'DISCORDVOICEDATABASE_','DiscordVoiceDatabase_' | Set-Content $f -NoNewline }; Write-Host \"Done\")"
+      "PowerShell(cd \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\"; $files = @\\('bot.py','cogs/voicedatabase.py','recording/cleanup.py','.env','.env.example','docker-compose.yml','.github/workflows/python-app.yml','.github/workflows/docker-image.yml'\\); foreach \\($f in $files\\) { \\(Get-Content $f -Raw\\) -replace 'DISCORDVOICEDATABASE_','DiscordVoiceDatabase_' | Set-Content $f -NoNewline }; Write-Host \"Done\")",
+      "Bash(ffprobe -v quiet -print_format json -show_streams -show_format \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\")",
+      "Bash(ffmpeg -i \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\" -af \"astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-\" -f null -)",
+      "Bash(ffmpeg -i \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\" -af \"silencedetect=noise=-50dB:duration=0.1\" -f null -)",
+      "Bash(Select-String -Pattern \"silence_\")"
     ]
   }
 }

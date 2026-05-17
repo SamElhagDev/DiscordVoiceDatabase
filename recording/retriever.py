@@ -187,35 +187,39 @@ class ClipRetriever:
         logger.warning(f"Clip output file missing: {output_file}")
         return None
 
+    # Low-level comfort noise mixed into every clip so VAD-induced silence
+    # regions have a natural noise floor rather than a hard gate to zero.
+    _COMFORT_NOISE = "anoisesrc=r=48000:c=mono:amplitude=0.001"
+    _NOISE_MIX = "amix=inputs=2:weights=1 1:normalize=0:duration=shortest"
+
     @staticmethod
     def _trim_single(input_path: str, output_path: str, start_sec: float, duration_sec: float):
-        """Trim a single OGG or PCM file.
-
-        adeclick is applied to every output clip.  On clean recordings (new
-        code) it is a no-op.  On old recordings (VAD silence-stripped) it
-        smooths the sudden amplitude jumps left behind by concatenated voiced
-        frames, which manifest as clicks or pops during playback.
-        """
+        """Trim a single OGG or PCM file with adeclick and comfort noise."""
+        _cn = ClipRetriever._COMFORT_NOISE
+        _nm = ClipRetriever._NOISE_MIX
         if input_path.endswith(".pcm"):
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "s16le", "-ar", "48000", "-ac", "2",
                 "-i", input_path,
+                "-filter_complex",
+                f"[0:a]adeclick,aformat=channel_layouts=mono[clean];{_cn}[noise];[clean][noise]{_nm}[out]",
+                "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
-                "-af", "adeclick",
-                "-c:a", "libopus", "-b:a", "48k", "-ac", "1",
+                "-c:a", "libopus", "-b:a", "48k",
                 output_path,
             ]
         else:
             cmd = [
                 "ffmpeg", "-y",
                 "-i", input_path,
+                "-filter_complex",
+                f"[0:a]adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[out]",
+                "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
-                "-af", "adeclick",
-                "-c:a", "libopus",
-                "-b:a", "48k",
+                "-c:a", "libopus", "-b:a", "48k",
                 output_path,
             ]
         result = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -269,7 +273,9 @@ class ClipRetriever:
                 _label = f"[x{_i}]"
                 _parts.append(f"{_prev}[{_i}:a]{_xf}{_label}")
                 _prev = _label
-            _parts.append(f"{_prev}adeclick[out]")
+            _cn = ClipRetriever._COMFORT_NOISE
+            _nm = ClipRetriever._NOISE_MIX
+            _parts.append(f"{_prev}adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[out]")
             filter_graph = ";".join(_parts)
 
             cmd.extend([
