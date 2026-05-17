@@ -9,9 +9,7 @@ A background task remuxes raw PCM files to OGG/Opus for storage efficiency.
 import asyncio
 import io
 import logging
-import math
 import os
-import struct
 import subprocess
 import threading
 import time
@@ -25,11 +23,6 @@ try:
 except ImportError:
     _davey = None
 
-try:
-    import numpy as _np
-except ImportError:
-    _np = None
-
 logger = logging.getLogger("discord_bot")
 
 # PCM settings from discord.py voice receive: 48kHz, stereo, 16-bit signed LE
@@ -37,57 +30,6 @@ SAMPLE_RATE = 48000
 CHANNELS = 2
 SAMPLE_WIDTH = 2  # 16-bit
 BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
-
-# Voice Activity Detection settings — both are configurable via env vars so you
-# can tune without redeploying.
-#
-VAD_RMS_THRESHOLD = int(os.getenv("DiscordVoiceDatabase_VAD_THRESHOLD", "150"))
-_VAD_HANGOVER_MS  = int(os.getenv("DiscordVoiceDatabase_VAD_HANGOVER_MS", "1000"))
-VAD_HANGOVER_FRAMES = max(1, _VAD_HANGOVER_MS // 20)  # 1 frame = 20 ms
-
-# Fade-in applied to the first PCM frame after resuming from zero-padded silence.
-
-_FADE_IN_SAMPLES = 192
-
-
-def _rms(pcm_data: bytes) -> float:
-    """Calculate RMS amplitude of 16-bit signed LE PCM data."""
-    n_samples = len(pcm_data) // SAMPLE_WIDTH
-    if n_samples == 0:
-        return 0.0
-    if _np is not None:
-        samples = _np.frombuffer(pcm_data[:n_samples * SAMPLE_WIDTH], dtype="<i2")
-        return float(_np.sqrt(_np.mean(samples.astype(_np.float32) ** 2)))
-    samples = struct.unpack(f"<{n_samples}h", pcm_data[:n_samples * SAMPLE_WIDTH])
-    return math.sqrt(sum(s * s for s in samples) / n_samples)
-
-
-def _fade_in_pcm(data: bytes) -> bytes:
-    """Apply a short linear fade-in to a stereo 16-bit LE PCM frame.
-    """
-    n = min(_FADE_IN_SAMPLES, len(data) // (CHANNELS * SAMPLE_WIDTH))
-    if n == 0:
-        return data
-    if _np is not None:
-        arr = _np.frombuffer(data, dtype="<i2").copy()
-        # gains shape: (n,) — one value per stereo sample pair
-        gains = _np.linspace(0.0, 1.0, n, endpoint=False, dtype=_np.float32)
-        # arr layout: [L0, R0, L1, R1, ...] — broadcast gain across both channels
-        arr[: n * CHANNELS] = (
-            (arr[: n * CHANNELS].reshape(n, CHANNELS) * gains[:, None])
-            .reshape(-1)
-            .astype("<i2")
-        )
-        return arr.tobytes()
-    # Pure-Python fallback
-    out = bytearray(data)
-    for i in range(n):
-        gain = i / _FADE_IN_SAMPLES
-        for ch in range(CHANNELS):
-            pos = (i * CHANNELS + ch) * SAMPLE_WIDTH
-            s = struct.unpack_from("<h", out, pos)[0]
-            struct.pack_into("<h", out, pos, int(s * gain))
-    return bytes(out)
 
 
 class UserStream:
@@ -100,9 +42,7 @@ class UserStream:
         self.start_ts = time.time()
         self.buffer = io.BytesIO()
         self.segment_db_id = None
-        self._hangover = 0
-        self._has_voice = False    # True once the first voiced frame has been written
-        self._tail_is_zero = False  # True while zero-padding silence after hangover expires
+        self._has_data = False
 
         # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
@@ -112,7 +52,7 @@ class UserStream:
         self.ogg_path = os.path.join(self.directory, f"{ts_ms}.ogg")
 
     def write(self, data: bytes):
-        self._has_voice = True
+        self._has_data = True
         self.buffer.write(data)
 
     def flush_to_disk(self) -> str:
@@ -133,9 +73,7 @@ class UserStream:
 
     @property
     def has_data(self) -> bool:
-        # Use _has_voice rather than buffer position: a buffer containing only
-        # leading zeros (no voiced frames yet) should not be flushed to disk.
-        return self._has_voice
+        return self._has_data
 
 
 class _PerUserPCMSink(voice_recv.AudioSink):
@@ -374,22 +312,25 @@ class VoiceRecorder:
                     self.user_streams.pop(user_id, None)
                 return
 
-            pcm_path = stream.flush_to_disk()
-            ogg_path = stream.ogg_path
-            guild_id = stream.guild_id
-            channel_id = stream.channel_id
-            start_ts = stream.start_ts
-            elapsed = stream.elapsed
-
+            # Swap in a fresh stream immediately so new packets aren't blocked
+            # during the disk flush below.
             if final:
                 self.user_streams.pop(user_id, None)
             else:
                 self.user_streams[user_id] = UserStream(
                     user_id=user_id,
-                    guild_id=guild_id,
-                    channel_id=channel_id,
+                    guild_id=stream.guild_id,
+                    channel_id=stream.channel_id,
                     base_path=self.recordings_path,
                 )
+
+        # Flush outside the lock — disk I/O must not block packet ingestion.
+        pcm_path = stream.flush_to_disk()
+        ogg_path = stream.ogg_path
+        guild_id = stream.guild_id
+        channel_id = stream.channel_id
+        start_ts = stream.start_ts
+        elapsed = stream.elapsed
 
         if pcm_path is None:
             return

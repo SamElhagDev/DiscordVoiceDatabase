@@ -7,7 +7,6 @@ import asyncio
 import logging
 import os
 import subprocess
-import time
 from datetime import datetime
 
 logger = logging.getLogger("discord_bot")
@@ -209,7 +208,7 @@ class ClipRetriever:
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
-                "-c:a", "libopus", "-b:a", "128k",
+                "-c:a", "libopus", "-b:a", "128k", "-application", "audio",
                 output_path,
             ]
         else:
@@ -221,7 +220,7 @@ class ClipRetriever:
                 "-map", "[out]",
                 "-ss", str(start_sec),
                 "-t", str(duration_sec),
-                "-c:a", "libopus", "-b:a", "128k",
+                "-c:a", "libopus", "-b:a", "128k", "-application", "audio",
                 output_path,
             ]
         result = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -246,6 +245,7 @@ class ClipRetriever:
                         "-f", "s16le", "-ar", "48000", "-ac", "2",
                         "-i", f,
                         "-c:a", "libopus", "-b:a", "128k", "-ac", "1",
+                        "-application", "audio",
                         tmp_ogg,
                     ]
                     result = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -288,6 +288,7 @@ class ClipRetriever:
                 "-t", str(duration_sec),
                 "-c:a", "libopus",
                 "-b:a", "128k",
+                "-application", "audio",
                 output_path,
             ])
             result = subprocess.run(cmd, capture_output=True, timeout=300)
