@@ -189,7 +189,7 @@ class ClipRetriever:
 
     # Low-level comfort noise mixed into every clip so VAD-induced silence
     # regions have a natural noise floor rather than a hard gate to zero.
-    _COMFORT_NOISE = "anoisesrc=r=48000:c=mono:amplitude=0.001"
+    _COMFORT_NOISE = "anoisesrc=r=48000:amplitude=0.001,aformat=channel_layouts=mono"
     _NOISE_MIX = "amix=inputs=2:weights=1 1:normalize=0:duration=shortest"
 
     @staticmethod
