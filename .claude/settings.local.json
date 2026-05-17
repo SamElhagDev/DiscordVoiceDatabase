@@ -36,7 +36,9 @@
       "Bash(ffprobe -v quiet -print_format json -show_streams -show_format \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\")",
       "Bash(ffmpeg -i \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\" -af \"astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-\" -f null -)",
       "Bash(ffmpeg -i \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\" -af \"silencedetect=noise=-50dB:duration=0.1\" -f null -)",
-      "Bash(Select-String -Pattern \"silence_\")"
+      "Bash(Select-String -Pattern \"silence_\")",
+      "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i voice)",
+      "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i discord)"
     ]
   }
 }

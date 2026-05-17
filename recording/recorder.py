@@ -76,19 +76,30 @@ class UserStream:
         return self._has_data
 
 
+FRAME_SIZE_SAMPLES = 960  # 20ms at 48kHz
+FRAME_BYTES = FRAME_SIZE_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 3840 bytes per frame
+SILENCE_FRAME = b"\x00" * FRAME_BYTES
+MAX_PLC_FRAMES = 5  # PLC beyond ~100ms degrades; fill remainder with silence
+
+
 class _PerUserPCMSink(voice_recv.AudioSink):
     """
     Receives per-user Opus frames from voice_recv, applies DAVE E2EE decryption
     when the channel has end-to-end encryption active, then decodes to PCM.
+
+    Handles packet loss by:
+      1. FEC recovery (decode next packet's redundancy data for the lost one)
+      2. PLC (Opus decoder extrapolates from internal state)
+      3. Silence padding for longer gaps
     """
 
     def __init__(self, callback):
         super().__init__()
         self._callback = callback
         self._decoders: dict[int, opus_mod.Decoder] = {}
+        self._last_seq: dict[int, int] = {}
 
     def wants_opus(self) -> bool:
-        # Take raw (possibly DAVE-encrypted) Opus bytes; we do Opus→PCM ourselves.
         return True
 
     def write(self, user, data: voice_recv.VoiceData):
@@ -101,24 +112,22 @@ class _PerUserPCMSink(voice_recv.AudioSink):
             return
 
         # Silence/FEC-fill packets are internally generated — no DAVE layer.
-        if not isinstance(data.packet, (SilencePacket, FakePacket)):
+        is_synthetic = isinstance(data.packet, (SilencePacket, FakePacket))
+        if not is_synthetic:
             dave_session = self._get_dave_session()
             if dave_session is not None:
                 if dave_session.can_passthrough(user.id):
-                    pass  # DAVE transition window: packets are plain Opus
+                    pass
                 elif dave_session.ready:
                     try:
                         opus_bytes = dave_session.decrypt(user.id, _davey.MediaType.audio, opus_bytes)
                     except Exception as e:
                         if "UnencryptedWhenPassthroughDisabled" in str(e):
-                            # Packet is plain Opus but passthrough window closed —
-                            # use it as-is rather than dropping audio.
                             logger.debug(f"DAVE passthrough fallback for user {user.id} (unencrypted packet)")
                         else:
                             logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
                             return
                 else:
-                    # DAVE active but MLS group not yet established — skip to avoid garbage PCM
                     return
 
         decoder = self._decoders.get(user.id)
@@ -126,16 +135,52 @@ class _PerUserPCMSink(voice_recv.AudioSink):
             decoder = opus_mod.Decoder()
             self._decoders[user.id] = decoder
 
+        # --- Gap detection via RTP sequence numbers ---
+        seq = getattr(data.packet, "sequence", None)
+        if seq is not None and not is_synthetic:
+            last = self._last_seq.get(user.id)
+            if last is not None:
+                gap = (seq - last - 1) & 0xFFFF
+                if 0 < gap <= 50:
+                    self._fill_gap(user, decoder, gap, opus_bytes)
+            self._last_seq[user.id] = seq
+
+        # --- Decode current packet ---
         try:
             pcm = decoder.decode(opus_bytes, fec=False)
         except Exception as e:
             logger.debug(f"Opus decode failed for user {user.id}: {e} — resetting decoder")
-            # Decoder state is corrupted (e.g. after DAVE transition);
-            # replace it so the next packet starts fresh.
             self._decoders[user.id] = opus_mod.Decoder()
+            self._last_seq.pop(user.id, None)
             return
 
         self._callback(user, pcm)
+
+    def _fill_gap(self, user, decoder: opus_mod.Decoder, gap: int, next_opus: bytes):
+        """Generate PCM for lost packets using FEC, PLC, and silence padding."""
+        # First lost frame: attempt FEC recovery from the current packet's redundancy
+        try:
+            fec_pcm = decoder.decode(next_opus, fec=True)
+            self._callback(user, fec_pcm)
+            filled = 1
+        except Exception:
+            filled = 0
+
+        # Remaining lost frames up to MAX_PLC_FRAMES: use Opus PLC
+        plc_limit = min(gap - filled, MAX_PLC_FRAMES)
+        for _ in range(plc_limit):
+            try:
+                plc_pcm = decoder.decode(None, fec=False)
+                self._callback(user, plc_pcm)
+                filled += 1
+            except Exception:
+                break
+
+        # Anything beyond PLC limit: fill with silence to maintain timeline
+        remaining = gap - filled
+        if remaining > 0:
+            silence_chunk = SILENCE_FRAME * remaining
+            self._callback(user, silence_chunk)
 
     def _get_dave_session(self):
         vc = self._voice_client
@@ -144,6 +189,7 @@ class _PerUserPCMSink(voice_recv.AudioSink):
 
     def cleanup(self):
         self._decoders.clear()
+        self._last_seq.clear()
 
 
 class VoiceRecorder:
