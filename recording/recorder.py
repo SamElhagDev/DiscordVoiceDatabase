@@ -112,21 +112,8 @@ class UserStream:
         self.ogg_path = os.path.join(self.directory, f"{ts_ms}.ogg")
 
     def write(self, data: bytes):
-        rms = _rms(data)
-        if rms >= VAD_RMS_THRESHOLD:
-            self._hangover = VAD_HANGOVER_FRAMES
-            if self._tail_is_zero:
-                data = _fade_in_pcm(data)
-            self._has_voice = True
-            self._tail_is_zero = False
-            self.buffer.write(data)
-        elif self._hangover > 0:
-            self._hangover -= 1
-            self._tail_is_zero = False
-            self.buffer.write(data)
-        elif self._has_voice:
-            self._tail_is_zero = True
-            self.buffer.write(bytes(len(data)))
+        self._has_voice = True
+        self.buffer.write(data)
 
     def flush_to_disk(self) -> str:
         """Write buffer to PCM file and return the path."""
