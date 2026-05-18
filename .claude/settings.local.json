@@ -38,7 +38,9 @@
       "Bash(ffmpeg -i \"C:\\\\Users\\\\Sam Elhag.EREF\\\\Desktop\\\\clip_241674282155900929_20260516_143615_2m.ogg\" -af \"silencedetect=noise=-50dB:duration=0.1\" -f null -)",
       "Bash(Select-String -Pattern \"silence_\")",
       "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i voice)",
-      "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i discord)"
+      "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i discord)",
+      "Bash(powershell -Command ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
     ]
   }
 }
