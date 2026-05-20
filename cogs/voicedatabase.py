@@ -1048,6 +1048,45 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         await context.send(embed=embed)
 
+    # ── Performance stats command ──────────────────────────────────────
+
+    @commands.hybrid_command(
+        name="perfstats",
+        description="Show running averages of processing times per pipeline stage.",
+    )
+    @app_commands.describe(days="Lookback window in days (default: 7)")
+    async def perf_stats(self, context: Context, days: int = 7) -> None:
+        import time as _time
+
+        days = max(days, 1)
+        now = _time.time()
+        since_ts = now - (days * 86400)
+        since_24h = now - 86400
+
+        stats = await self.bot.database.get_perf_stats(since_ts, since_24h)
+        if not stats:
+            await context.send("No performance data recorded yet.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Performance Stats",
+            description=f"Processing time averages per 60s audio segment (last {days} days)",
+            color=0x3498DB,
+        )
+
+        total = 0.0
+        for method, count, avg_60s, avg_24h in stats:
+            avg_24h_str = f"{avg_24h:.2f}s" if avg_24h is not None else "—"
+            embed.add_field(
+                name=method.capitalize(),
+                value=f"`{avg_60s:.2f}s` avg ({count} samples) · 24h: `{avg_24h_str}`",
+                inline=False,
+            )
+            total += avg_60s or 0
+
+        embed.set_footer(text=f"Pipeline total: {total:.2f}s per 60s segment")
+        await context.send(embed=embed)
+
     # ── Auto-rejoin loop ────────────────────────────────────────────────
 
     @tasks.loop(minutes=10.0)

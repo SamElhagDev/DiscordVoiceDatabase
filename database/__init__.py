@@ -276,6 +276,41 @@ class DatabaseManager:
         async with rows as cursor:
             return await cursor.fetchall()
 
+    # ── Performance logging operations ──────────────────────────────────
+
+    async def log_perf(self, segment_id: int, method: str,
+                       duration_sec: float, audio_duration_sec: float):
+        async with self._lock:
+            await self.connection.execute(
+                "INSERT INTO perf_logs(segment_id, method, duration_sec, audio_duration_sec, logged_at) VALUES (?, ?, ?, ?, ?)",
+                (segment_id, method, duration_sec, audio_duration_sec, time.time()),
+            )
+            await self.connection.commit()
+
+    async def get_perf_stats(self, since_ts: float, since_24h_ts: float) -> list:
+        rows = await self.connection.execute(
+            """SELECT method, COUNT(*) AS cnt,
+                      AVG(duration_sec * 60.0 / audio_duration_sec) AS avg_per_60s,
+                      AVG(CASE WHEN logged_at >= ? THEN duration_sec * 60.0 / audio_duration_sec END) AS avg_24h
+               FROM perf_logs
+               WHERE logged_at >= ? AND audio_duration_sec > 0
+               GROUP BY method ORDER BY method""",
+            (since_24h_ts, since_ts),
+        )
+        async with rows as cursor:
+            return await cursor.fetchall()
+
+    async def delete_perf_logs_by_segment_ids(self, segment_ids: list):
+        if not segment_ids:
+            return
+        async with self._lock:
+            placeholders = ",".join("?" for _ in segment_ids)
+            await self.connection.execute(
+                f"DELETE FROM perf_logs WHERE segment_id IN ({placeholders})",
+                segment_ids,
+            )
+            await self.connection.commit()
+
     async def get_untranscribed_segments(self, guild_id: int = None) -> list:
         """Return all completed segments that have no transcript yet."""
         if guild_id:

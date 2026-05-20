@@ -29,3 +29,15 @@ CREATE TABLE IF NOT EXISTS `recording_settings` (
     enabled INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS `perf_logs` (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    segment_id INTEGER NOT NULL,
+    method TEXT NOT NULL,
+    duration_sec REAL NOT NULL,
+    audio_duration_sec REAL NOT NULL,
+    logged_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_logs_method_time ON perf_logs(method, logged_at);
+CREATE INDEX IF NOT EXISTS idx_perf_logs_segment ON perf_logs(segment_id);
+

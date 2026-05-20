@@ -511,6 +511,7 @@ class VoiceRecorder:
                 )
 
         # Flush outside the lock — disk I/O must not block packet ingestion.
+        rotate_start = time.time()
         pcm_path = stream.flush_to_disk()
         ogg_path = stream.ogg_path
         guild_id = stream.guild_id
@@ -533,7 +534,12 @@ class VoiceRecorder:
         )
         await self.db.close_segment(segment_id, end_ts, file_size)
 
-        await self._remux_queue.put((pcm_path, ogg_path, segment_id))
+        rotate_dur = time.time() - rotate_start
+        audio_dur = end_ts - start_ts
+        if audio_dur > 0:
+            await self.db.log_perf(segment_id, "rotate", rotate_dur, audio_dur)
+
+        await self._remux_queue.put((pcm_path, ogg_path, segment_id, audio_dur))
 
         logger.debug(
             f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
@@ -542,16 +548,20 @@ class VoiceRecorder:
     async def _remux_worker(self):
         try:
             while True:
-                pcm_path, ogg_path, segment_id = await self._remux_queue.get()
+                pcm_path, ogg_path, segment_id, audio_dur = await self._remux_queue.get()
                 try:
+                    remux_start = time.time()
                     await asyncio.to_thread(self._remux_pcm_to_ogg, pcm_path, ogg_path)
+                    remux_dur = time.time() - remux_start
                     if os.path.exists(pcm_path):
                         os.remove(pcm_path)
                     ogg_size = os.path.getsize(ogg_path) if os.path.exists(ogg_path) else 0
                     if ogg_size > 0:
                         await self.db.update_segment_file_size(segment_id, ogg_size)
+                        if audio_dur > 0:
+                            await self.db.log_perf(segment_id, "remux", remux_dur, audio_dur)
                         if self.transcriber:
-                            await self.transcriber.enqueue(ogg_path, segment_id)
+                            await self.transcriber.enqueue(ogg_path, segment_id, audio_dur)
                 except Exception as e:
                     logger.error(f"Remux failed for {pcm_path}: {e}")
                 finally:

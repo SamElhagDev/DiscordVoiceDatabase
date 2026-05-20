@@ -44,7 +44,8 @@
       "PowerShell(.\\\\.specify\\\\scripts\\\\powershell\\\\setup-plan.ps1 -Json)",
       "Skill(speckit-git-feature)",
       "Skill(speckit-git-feature:*)",
-      "PowerShell(if \\(-not \\(Test-Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\"\\)\\) { New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\" })"
+      "PowerShell(if \\(-not \\(Test-Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\"\\)\\) { New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\" })",
+      "PowerShell($env:SPECIFY_FEATURE = \"002-improve-transcription-quality\"; & \".\\\\.specify\\\\scripts\\\\powershell\\\\setup-plan.ps1\" -Json)"
     ]
   }
 }

@@ -70,6 +70,7 @@ class SegmentCleanup:
                     logger.warning(f"Failed to delete {file_path}: {e}")
 
             if deleted_ids:
+                await self.db.delete_perf_logs_by_segment_ids(deleted_ids)
                 await self.db.delete_segments_by_ids(deleted_ids)
 
             if removed > 0:

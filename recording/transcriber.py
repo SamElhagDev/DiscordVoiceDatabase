@@ -7,6 +7,7 @@ Transcribes OGG segments after remux and stores the text in the database.
 import asyncio
 import logging
 import os
+import time
 
 from faster_whisper import WhisperModel
 
@@ -38,23 +39,27 @@ class Transcriber:
             self._task.cancel()
             logger.info("Transcription worker stopped")
 
-    async def enqueue(self, ogg_path: str, segment_id: int):
-        await self._queue.put((ogg_path, segment_id))
+    async def enqueue(self, ogg_path: str, segment_id: int, audio_duration: float = 60.0):
+        await self._queue.put((ogg_path, segment_id, audio_duration))
         logger.debug(f"Enqueued transcription: segment {segment_id} ({ogg_path}) — queue size: {self._queue.qsize()}")
 
     async def _worker(self):
         try:
             while True:
-                ogg_path, segment_id = await self._queue.get()
+                ogg_path, segment_id, audio_duration = await self._queue.get()
                 try:
                     if not os.path.exists(ogg_path):
                         logger.warning(f"Transcription skipped — file not found: {ogg_path} (segment {segment_id})")
                         continue
                     logger.debug(f"Transcribing segment {segment_id}: {ogg_path}")
+                    t0 = time.time()
                     transcript = await asyncio.to_thread(self._transcribe, ogg_path)
+                    duration = time.time() - t0
                     result = transcript.strip() if transcript and transcript.strip() else "Blank"
                     await self.db.set_segment_transcript(segment_id, result)
-                    logger.info(f"Transcribed segment {segment_id}: {result[:80]}")
+                    if audio_duration > 0:
+                        await self.db.log_perf(segment_id, "transcribe", duration, audio_duration)
+                    logger.info(f"Transcribed segment {segment_id}: {result[:80]} ({duration:.2f}s)")
                 except Exception as e:
                     logger.error(f"Transcription failed for segment {segment_id}: {e}")
                 finally:
