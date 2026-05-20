@@ -16,6 +16,7 @@ _ICONS = {
     "setchannel":      "📌",
     "retention":       "🗓️",
     "listclips":       "📋",
+    "listtext":        "📄",
     "playclip":        "▶️",
     "clip":            "💾",
     "search":          "🔍",
@@ -41,6 +42,7 @@ _DESCS = {
     "setchannel":      "Set primary auto-join channel",
     "retention":       "Set how long recordings are kept",
     "listclips":       "Browse recorded segments by date",
+    "listtext":        "View transcript text for a segment",
     "playclip":        "Play a clip in voice chat",
     "clip":            "Download a clip",
     "search":          "Search recordings by transcript",
@@ -66,7 +68,7 @@ _DESCS = {
 _VDB_SECTIONS = [
     ("👥  Participation", ["join", "leave", "participants"],           True),
     ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"], True),
-    ("🎵  Playback",      ["listclips", "playclip", "clip", "search", "stop"], False),
+    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "stop"], False),
     ("⚙️  Settings",      ["setchannel", "retention"],                 True),
     ("📝  Transcription", ["transcribe"],                              True),
 ]

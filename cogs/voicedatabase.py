@@ -515,6 +515,69 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
+        name="listtext",
+        description="List recorded segments and view the transcript text for a user on a given day.",
+    )
+    @app_commands.describe(
+        user="The user whose transcripts to view",
+        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-03)",
+    )
+    async def list_text(
+        self,
+        context: Context,
+        user: discord.User,
+        date: str,
+    ) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+        except ValueError:
+            await context.send(
+                embed=discord.Embed(
+                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-03`).",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        day_end = day_start + timedelta(days=1)
+
+        all_segments = await self.bot.database.get_segments_in_range(
+            user_id=user.id,
+            start_ts=day_start.timestamp(),
+            end_ts=day_end.timestamp(),
+            guild_id=context.guild.id,
+        )
+
+        segments = []
+        for seg in all_segments:
+            transcript = seg[8] if len(seg) > 8 else None
+            if transcript == "Blank":
+                continue
+            segments.append(seg)
+
+        logger.info(f"/listtext: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+
+        if not segments:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No recordings with voice activity found for {user.mention} on {date}.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, date=date, mode="text",
+        )
+        embed = view.build_embed()
+        await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
         name="search",
         description="Search recordings by transcript text for a user on a given day.",
     )
@@ -1418,7 +1481,12 @@ class _ClipSelectView(discord.ui.View):
             options.append(discord.SelectOption(
                 label=label, description=desc, value=str(seg[0]),
             ))
-        placeholder = "Pick a segment to download..." if self.mode == "download" else "Pick a segment to play..."
+        if self.mode == "download":
+            placeholder = "Pick a segment to download..."
+        elif self.mode == "text":
+            placeholder = "Pick a segment to view transcript..."
+        else:
+            placeholder = "Pick a segment to play..."
         select = discord.ui.Select(placeholder=placeholder, options=options)
         select.callback = self.on_select
         self.add_item(select)
@@ -1460,8 +1528,13 @@ class _ClipSelectView(discord.ui.View):
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
             field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
             embed.add_field(name=field_name, value=field_value, inline=False)
-        action = "download" if self.mode == "download" else "play"
-        embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action} it")
+        if self.mode == "download":
+            action = "download"
+        elif self.mode == "text":
+            action = "view its transcript"
+        else:
+            action = "play"
+        embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action}")
         return embed
 
     async def _first_page(self, interaction: discord.Interaction):
@@ -1500,6 +1573,23 @@ class _ClipSelectView(discord.ui.View):
             await interaction.response.send_message("Segment not found.", ephemeral=True)
             return
         logger.debug(f"ClipSelectView: Selected segment id={selected_id} mode={self.mode}")
+
+        if self.mode == "text":
+            transcript = seg[8] if len(seg) > 8 and seg[8] else None
+            if not transcript or transcript == "Blank":
+                await interaction.response.send_message(
+                    "No transcript available for this segment.", ephemeral=True,
+                )
+                return
+            start_dt = datetime.fromtimestamp(seg[4], tz=EASTERN)
+            time_str = start_dt.strftime("%I:%M:%S %p")
+            header = f"[{self.target_user.display_name} — {time_str}]"
+            full_text = f"{header}\n{transcript}"
+            chunks = [full_text[i:i + 2000] for i in range(0, len(full_text), 2000)]
+            await interaction.response.send_message(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+            return
 
         if seg[5] is not None:
             default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))

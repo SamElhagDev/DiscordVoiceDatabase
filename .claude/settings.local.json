@@ -40,7 +40,11 @@
       "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i voice)",
       "Bash(ls \"C:\\\\Users\\\\Sam Elhag.EREF\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\lib\\\\site-packages\" | grep -i discord)",
       "Bash(powershell -Command ' *)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('recording/recorder.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "PowerShell(.\\\\.specify\\\\scripts\\\\powershell\\\\setup-plan.ps1 -Json)",
+      "Skill(speckit-git-feature)",
+      "Skill(speckit-git-feature:*)",
+      "PowerShell(if \\(-not \\(Test-Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\"\\)\\) { New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordVoiceDatabase\\\\specs\\\\001-add-listtext-command\\\\contracts\" })"
     ]
   }
 }
