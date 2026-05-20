@@ -670,6 +670,99 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
+        name="searchtext",
+        description="Search recordings by transcript and view the matching text.",
+    )
+    @app_commands.describe(
+        user="The user to search recordings for",
+        date="Date or start date in Eastern time (YYYY-MM-DD)",
+        query="Text to search for in transcripts",
+        end_date="End date for range search (YYYY-MM-DD, optional)",
+    )
+    async def search_text(
+        self,
+        context: Context,
+        user: discord.User,
+        date: str,
+        end_date: str = None,
+        *,
+        query: str = "",
+    ) -> None:
+        if context.guild is None:
+            await context.send("This command can only be used in a server.")
+            return
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+        except ValueError:
+            await context.send(
+                embed=discord.Embed(
+                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        range_end = None
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                query = f"{end_date} {query}".strip()
+                end_date = None
+
+        if range_end is not None:
+            if range_end < day_start:
+                await context.send(
+                    embed=discord.Embed(
+                        description="End date must be on or after the start date.",
+                        color=0xED4245,
+                    )
+                )
+                return
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
+
+        if not query:
+            await context.send(
+                embed=discord.Embed(
+                    description="Please provide a search query.",
+                    color=0xED4245,
+                )
+            )
+            return
+
+        segments = await self.bot.database.search_segments_by_transcript(
+            user_id=user.id,
+            start_ts=day_start.timestamp(),
+            end_ts=day_end.timestamp(),
+            query=query,
+            guild_id=context.guild.id,
+        )
+
+        logger.info(f"/searchtext: user={user.id} date={date_label} query=\"{query}\" — {len(segments)} result(s)")
+
+        if not segments:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No results for **\"{query}\"** in {user.mention}'s recordings on {date_label}.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, date=f"{date_label} — \"{query}\"",
+            mode="text",
+        )
+        embed = view.build_embed()
+        await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
         name="playclip",
         description="Play a recorded clip in your current voice channel.",
     )
