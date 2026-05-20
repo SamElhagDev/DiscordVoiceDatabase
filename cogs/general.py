@@ -45,7 +45,7 @@ _DESCS = {
     "listtext":        "View transcript text for a segment",
     "playclip":        "Play a clip in voice chat",
     "clip":            "Download a clip",
-    "search":          "Search recordings by transcript",
+    "search":          "Search transcripts (supports date ranges)",
     "stop":            "Stop current playback",
     "transcribe":      "Backfill missing transcripts",
     "help":            "Show this menu",
