@@ -592,9 +592,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         context: Context,
         user: discord.User,
         date: str,
-        *,
-        query: str,
         end_date: str = None,
+        *,
+        query: str = "",
     ) -> None:
         if context.guild is None:
             await context.send("This command can only be used in a server.")
@@ -611,17 +611,15 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
+        range_end = None
         if end_date:
             try:
                 range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
             except ValueError:
-                await context.send(
-                    embed=discord.Embed(
-                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-07`).",
-                        color=0xED4245,
-                    )
-                )
-                return
+                query = f"{end_date} {query}".strip()
+                end_date = None
+
+        if range_end is not None:
             if range_end < day_start:
                 await context.send(
                     embed=discord.Embed(
@@ -635,6 +633,15 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         else:
             day_end = day_start + timedelta(days=1)
             date_label = date
+
+        if not query:
+            await context.send(
+                embed=discord.Embed(
+                    description="Please provide a search query.",
+                    color=0xED4245,
+                )
+            )
+            return
 
         segments = await self.bot.database.search_segments_by_transcript(
             user_id=user.id,
