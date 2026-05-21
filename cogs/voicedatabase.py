@@ -453,21 +453,26 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     @commands.hybrid_command(
         name="listclips",
-        description="List all recorded segments for a user on a given day.",
+        description="List all recorded segments for a user on a given day or date range.",
     )
     @app_commands.describe(
         user="The user to list recordings for",
-        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-03)",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
+        end_date="End date for range search (YYYY-MM-DD, optional)",
     )
     async def list_clips(
         self,
         context: Context,
         user: discord.User,
-        date: str,
+        date: str = None,
+        end_date: str = None,
     ) -> None:
         if context.guild is None:
             await context.send("This command can only be used in a server.")
             return
+
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
 
         try:
             day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
@@ -480,7 +485,30 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        day_end = day_start + timedelta(days=1)
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
+                        color=0xED4245,
+                    )
+                )
+                return
+            if range_end < day_start:
+                await context.send(
+                    embed=discord.Embed(
+                        description="End date must be on or after the start date.",
+                        color=0xED4245,
+                    )
+                )
+                return
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
             user_id=user.id,
@@ -496,12 +524,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 continue
             segments.append(seg)
 
-        logger.info(f"/listclips: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+        logger.info(f"/listclips: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
         if not segments:
             await context.send(
                 embed=discord.Embed(
-                    description=f"No recordings with voice activity found for {user.mention} on {date}.",
+                    description=f"No recordings with voice activity found for {user.mention} on {date_label}.",
                     color=0xFEE75C,
                 )
             )
@@ -509,28 +537,33 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         view = _ClipSelectView(
             cog=self, segments=segments, target_user=user,
-            invoker_id=context.author.id, date=date,
+            invoker_id=context.author.id, date=date_label,
         )
         embed = view.build_embed()
         await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="listtext",
-        description="List recorded segments and view the transcript text for a user on a given day.",
+        description="List recorded segments and view the transcript text for a user on a given day or date range.",
     )
     @app_commands.describe(
         user="The user whose transcripts to view",
-        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-03)",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
+        end_date="End date for range search (YYYY-MM-DD, optional)",
     )
     async def list_text(
         self,
         context: Context,
         user: discord.User,
-        date: str,
+        date: str = None,
+        end_date: str = None,
     ) -> None:
         if context.guild is None:
             await context.send("This command can only be used in a server.")
             return
+
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
 
         try:
             day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
@@ -543,7 +576,30 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        day_end = day_start + timedelta(days=1)
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
+                        color=0xED4245,
+                    )
+                )
+                return
+            if range_end < day_start:
+                await context.send(
+                    embed=discord.Embed(
+                        description="End date must be on or after the start date.",
+                        color=0xED4245,
+                    )
+                )
+                return
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
             user_id=user.id,
@@ -559,12 +615,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 continue
             segments.append(seg)
 
-        logger.info(f"/listtext: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+        logger.info(f"/listtext: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
         if not segments:
             await context.send(
                 embed=discord.Embed(
-                    description=f"No recordings with voice activity found for {user.mention} on {date}.",
+                    description=f"No recordings with voice activity found for {user.mention} on {date_label}.",
                     color=0xFEE75C,
                 )
             )
@@ -572,7 +628,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         view = _ClipSelectView(
             cog=self, segments=segments, target_user=user,
-            invoker_id=context.author.id, date=date, mode="text",
+            invoker_id=context.author.id, date=date_label, mode="text",
         )
         embed = view.build_embed()
         await context.send(embed=embed, view=view)
@@ -583,7 +639,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @app_commands.describe(
         user="The user to search recordings for",
-        date="Date or start date in Eastern time (YYYY-MM-DD)",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
         query="Text to search for in transcripts",
         end_date="End date for range search (YYYY-MM-DD, optional)",
     )
@@ -591,7 +647,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self,
         context: Context,
         user: discord.User,
-        date: str,
+        date: str = None,
         end_date: str = None,
         *,
         query: str = "",
@@ -600,16 +656,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await context.send("This command can only be used in a server.")
             return
 
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
         try:
             day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
         except ValueError:
-            await context.send(
-                embed=discord.Embed(
-                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                    color=0xED4245,
-                )
-            )
-            return
+            query = f"{date} {end_date} {query}".strip() if end_date else f"{date} {query}".strip()
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            end_date = None
 
         range_end = None
         if end_date:
@@ -675,7 +731,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @app_commands.describe(
         user="The user to search recordings for",
-        date="Date or start date in Eastern time (YYYY-MM-DD)",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
         query="Text to search for in transcripts",
         end_date="End date for range search (YYYY-MM-DD, optional)",
     )
@@ -683,7 +739,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self,
         context: Context,
         user: discord.User,
-        date: str,
+        date: str = None,
         end_date: str = None,
         *,
         query: str = "",
@@ -692,16 +748,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await context.send("This command can only be used in a server.")
             return
 
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
         try:
             day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
         except ValueError:
-            await context.send(
-                embed=discord.Embed(
-                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                    color=0xED4245,
-                )
-            )
-            return
+            query = f"{date} {end_date} {query}".strip() if end_date else f"{date} {query}".strip()
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            end_date = None
 
         range_end = None
         if end_date:
