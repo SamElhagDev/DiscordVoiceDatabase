@@ -1264,62 +1264,124 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     # ── Auto-rejoin loop ────────────────────────────────────────────────
 
-    @tasks.loop(minutes=10.0)
+    AUDIO_STALE_THRESHOLD = 180  # seconds — 3 min with no packets = dead UDP
+
+    @tasks.loop(minutes=2.0)
     async def auto_rejoin_loop(self):
         """
-        Periodically check if the bot should auto-join a voice channel.
-        Scans all voice channels, requires at least 2 non-bot members,
-        and picks the channel with the most people.
+        Periodically check voice health and auto-join voice channels.
+
+        For guilds WITH an active recorder: detect stale audio (voice UDP
+        died silently) and reconnect.
+        For guilds WITHOUT a recorder: scan for populated channels to join.
         """
         for guild in self.bot.guilds:
-            if guild.id in self.recorders:
+            recorder = self.recorders.get(guild.id)
+
+            if recorder is not None:
+                await self._check_voice_health(guild, recorder)
                 continue
 
-            settings = await self.bot.database.get_settings(guild.id)
-            if not settings["enabled"]:
-                continue
+            await self._try_auto_join(guild)
 
-            consented = await self.bot.database.get_consented_user_ids(guild.id)
+    async def _check_voice_health(self, guild: discord.Guild, recorder: VoiceRecorder):
+        stale = recorder.seconds_since_last_packet
+        if stale < self.AUDIO_STALE_THRESHOLD:
+            return
 
-            best_channel = None
-            best_count = 0
-            for channel in guild.voice_channels:
-                members_in_channel = [m for m in channel.members if not m.bot]
-                if len(members_in_channel) < 2:
-                    continue
-                active_consented = consented & {m.id for m in members_in_channel}
-                if not active_consented:
-                    continue
-                if len(members_in_channel) > best_count:
-                    best_count = len(members_in_channel)
-                    best_channel = channel
+        members_in_channel = [m for m in recorder.channel.members if not m.bot]
+        if len(members_in_channel) < 1:
+            return
 
-            if best_channel is None:
-                continue
+        logger.warning(
+            f"Voice audio stale for {stale:.0f}s in {guild.name} / "
+            f"#{recorder.channel.name} — reconnecting"
+        )
 
+        channel = recorder.channel
+        settings = await self.bot.database.get_settings(guild.id)
+
+        old_recorder = self.recorders.pop(guild.id, None)
+        if old_recorder:
+            await old_recorder.stop()
+        if guild.voice_client:
             try:
-                vc = await self._connect_voice(best_channel)
-                if vc is None:
-                    continue
-                recorder = VoiceRecorder(
-                    bot=self.bot,
-                    guild=guild,
-                    channel=best_channel,
-                    database=self.bot.database,
-                    recordings_path=RECORDINGS_PATH,
-                    segment_duration_sec=settings["segment_duration_sec"],
-                    transcriber=self.transcriber,
-                )
-                await recorder.start(vc)
-                self.recorders[guild.id] = recorder
-                logger.info(
-                    f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
-                )
-                recorder.pause_listening()
-                await _play_chime(vc, CHIME_START)
-                recorder.resume_listening()
-            except Exception as e:
-                logger.error(f"Auto-join failed for {guild.name}: {e}")
+                await guild.voice_client.disconnect(force=True)
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+
+        try:
+            vc = await self._connect_voice(channel)
+            if vc is None:
+                logger.error(f"Voice health reconnect failed for {guild.name}")
+                return
+            new_recorder = VoiceRecorder(
+                bot=self.bot,
+                guild=guild,
+                channel=channel,
+                database=self.bot.database,
+                recordings_path=RECORDINGS_PATH,
+                segment_duration_sec=settings["segment_duration_sec"],
+                transcriber=self.transcriber,
+            )
+            await new_recorder.start(vc)
+            self.recorders[guild.id] = new_recorder
+            logger.info(
+                f"Voice health reconnect successful in {guild.name} / #{channel.name}"
+            )
+            new_recorder.pause_listening()
+            await _play_chime(vc, CHIME_START)
+            new_recorder.resume_listening()
+        except Exception as e:
+            logger.error(f"Voice health reconnect failed for {guild.name}: {e}")
+
+    async def _try_auto_join(self, guild: discord.Guild):
+        settings = await self.bot.database.get_settings(guild.id)
+        if not settings["enabled"]:
+            return
+
+        consented = await self.bot.database.get_consented_user_ids(guild.id)
+
+        best_channel = None
+        best_count = 0
+        for channel in guild.voice_channels:
+            members_in_channel = [m for m in channel.members if not m.bot]
+            if len(members_in_channel) < 2:
+                continue
+            active_consented = consented & {m.id for m in members_in_channel}
+            if not active_consented:
+                continue
+            if len(members_in_channel) > best_count:
+                best_count = len(members_in_channel)
+                best_channel = channel
+
+        if best_channel is None:
+            return
+
+        try:
+            vc = await self._connect_voice(best_channel)
+            if vc is None:
+                return
+            recorder = VoiceRecorder(
+                bot=self.bot,
+                guild=guild,
+                channel=best_channel,
+                database=self.bot.database,
+                recordings_path=RECORDINGS_PATH,
+                segment_duration_sec=settings["segment_duration_sec"],
+                transcriber=self.transcriber,
+            )
+            await recorder.start(vc)
+            self.recorders[guild.id] = recorder
+            logger.info(
+                f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
+            )
+            recorder.pause_listening()
+            await _play_chime(vc, CHIME_START)
+            recorder.resume_listening()
+        except Exception as e:
+            logger.error(f"Auto-join failed for {guild.name}: {e}")
 
     @auto_rejoin_loop.before_loop
     async def before_auto_rejoin(self):

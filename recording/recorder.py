@@ -367,12 +367,14 @@ class VoiceRecorder:
         self._rotation_task: asyncio.Task = None
         self._remux_queue: asyncio.Queue = asyncio.Queue()
         self._remux_task: asyncio.Task = None
+        self._last_packet_time: float = 0.0
 
     async def start(self, voice_client: voice_recv.VoiceRecvClient):
         """Begin recording all consented users in the channel."""
         self.voice_client = voice_client
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
         self._running = True
+        self._last_packet_time = time.monotonic()
 
         sink = _PerUserPCMSink(self.on_audio_packet)
         self.voice_client.listen(sink)
@@ -422,6 +424,12 @@ class VoiceRecorder:
         self.consented_users = await self.db.get_consented_user_ids(self.guild.id)
         logger.debug(f"Consent refreshed for guild {self.guild.id}: {old_count} → {len(self.consented_users)} users")
 
+    @property
+    def seconds_since_last_packet(self) -> float:
+        if self._last_packet_time == 0.0:
+            return 0.0
+        return time.monotonic() - self._last_packet_time
+
     def pause_listening(self):
         """Detach the audio sink before clip playback to avoid send/receive interference.
         Always pair with a resume_listening() call once playback is done."""
@@ -459,6 +467,8 @@ class VoiceRecorder:
             logger.warning(f"resume_listening: could not re-attach sink: {e}")
 
     def on_audio_packet(self, user: discord.User, data: bytes):
+        self._last_packet_time = time.monotonic()
+
         if user.id not in self.consented_users:
             return
 
