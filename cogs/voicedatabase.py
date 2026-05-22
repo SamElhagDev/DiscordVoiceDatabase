@@ -6,6 +6,7 @@ and clip retrieval.
 import asyncio
 import os
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -338,21 +339,26 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
     @commands.hybrid_command(
         name="clip",
-        description="Browse and download a recorded clip for a user on a given day.",
+        description="Browse and download a recorded clip for a user on a given day or date range.",
     )
     @app_commands.describe(
         user="The user whose audio you want to retrieve",
-        date="Date in Eastern time (YYYY-MM-DD, e.g. 2026-05-05)",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
+        end_date="End date for range search (YYYY-MM-DD, optional)",
     )
     async def retrieve_clip(
         self,
         context: Context,
         user: discord.User,
-        date: str,
+        date: str = None,
+        end_date: str = None,
     ) -> None:
         if context.guild is None:
             await context.send("This command can only be used in a server.")
             return
+
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
 
         try:
             day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
@@ -365,7 +371,30 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        day_end = day_start + timedelta(days=1)
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
+                        color=0xED4245,
+                    )
+                )
+                return
+            if range_end < day_start:
+                await context.send(
+                    embed=discord.Embed(
+                        description="End date must be on or after the start date.",
+                        color=0xED4245,
+                    )
+                )
+                return
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
             user_id=user.id,
@@ -381,12 +410,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 continue
             segments.append(seg)
 
-        logger.info(f"/clip: user={user.id} date={date} — {len(all_segments)} total, {len(segments)} after filter")
+        logger.info(f"/clip: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
         if not segments:
             await context.send(
                 embed=discord.Embed(
-                    description=f"No recordings found for {user.mention} on {date}.",
+                    description=f"No recordings found for {user.mention} on {date_label}.",
                     color=0xFEE75C,
                 )
             )
@@ -394,7 +423,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         view = _ClipSelectView(
             cog=self, segments=segments, target_user=user,
-            invoker_id=context.author.id, date=date, mode="download",
+            invoker_id=context.author.id, date=date_label, mode="download",
         )
         embed = view.build_embed()
         await context.send(embed=embed, view=view)
@@ -1112,7 +1141,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await context.send("This command can only be used in a server.")
             return
 
-        import time as _time
         recorder = self.recorders.get(context.guild.id)
         settings = await self.bot.database.get_settings(context.guild.id)
         participants = await self.bot.database.get_participants(context.guild.id)
@@ -1126,7 +1154,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             primary_ch = context.guild.get_channel(settings["primary_channel_id"])
 
         # Fetch talk time stats for past week and all time
-        week_ago = _time.time() - 7 * 86400
+        week_ago = time.time() - 7 * 86400
         week_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=week_ago)
         alltime_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=0.0)
 
@@ -1205,10 +1233,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @app_commands.describe(days="Lookback window in days (default: 7)")
     async def perf_stats(self, context: Context, days: int = 7) -> None:
-        import time as _time
-
         days = max(days, 1)
-        now = _time.time()
+        now = time.time()
         since_ts = now - (days * 86400)
         since_24h = now - 86400
 
@@ -1671,7 +1697,7 @@ class _ClipSelectView(discord.ui.View):
         self.target_user = target_user
         self.invoker_id = invoker_id
         self.date = date
-        self.mode = mode  # "play" or "download"
+        self.mode = mode  # "play", "download", or "text"
         self.page = 0
         self.per_page = 10
         self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)

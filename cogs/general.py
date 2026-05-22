@@ -20,8 +20,10 @@ _ICONS = {
     "playclip":        "▶️",
     "clip":            "💾",
     "search":          "🔍",
+    "searchtext":      "🔎",
     "stop":            "🛑",
     "transcribe":      "📝",
+    "perfstats":       "⚡",
     "help":            "❓",
     "ping":            "🏓",
     "sync":            "🔄",
@@ -45,9 +47,11 @@ _DESCS = {
     "listtext":        "View transcript text for a segment",
     "playclip":        "Play a clip in voice chat",
     "clip":            "Download a clip",
-    "search":          "Search transcripts (supports date ranges)",
+    "search":          "Search transcripts & play a match",
+    "searchtext":      "Search transcripts & view text",
     "stop":            "Stop current playback",
     "transcribe":      "Backfill missing transcripts",
+    "perfstats":       "Pipeline processing time stats",
     "help":            "Show this menu",
     "ping":            "Check bot latency",
     "sync":            "Sync slash commands (global or guild)",
@@ -68,9 +72,9 @@ _DESCS = {
 _VDB_SECTIONS = [
     ("👥  Participation", ["join", "leave", "participants"],           True),
     ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"], True),
-    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "stop"], False),
+    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "searchtext", "stop"], False),
     ("⚙️  Settings",      ["setchannel", "retention"],                 True),
-    ("📝  Transcription", ["transcribe"],                              True),
+    ("📝  Transcription", ["transcribe", "perfstats"],                 True),
 ]
 
 
