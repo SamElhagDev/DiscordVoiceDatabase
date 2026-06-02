@@ -82,7 +82,8 @@ FRAME_BYTES = FRAME_SIZE_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 3840 bytes per fra
 SILENCE_FRAME = b"\x00" * FRAME_BYTES
 MAX_PLC_FRAMES = 10       # ~200ms: Opus PLC degrades but still beats hard silence
 PLC_FADE_FRAMES = 3       # fade out last 60ms of PLC before silence boundary
-JITTER_DEPTH = 4          # 80ms reorder window — covers typical mobile jitter
+JITTER_DEPTH = 12         # 240ms reorder window — recording has no latency cost
+DECODER_RESET_THRESHOLD = 5  # consecutive decode failures before nuking decoder state
 
 
 def _seq_delta(a: int, b: int) -> int:
@@ -181,6 +182,7 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         self._callback = callback
         self._decoders: dict[int, opus_mod.Decoder] = {}
         self._jitter: dict[int, _JitterBuffer] = {}
+        self._consecutive_failures: dict[int, int] = {}
 
     def wants_opus(self) -> bool:
         return True
@@ -259,13 +261,28 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                 try:
                     pcm = decoder.decode(opus, fec=False)
                     self._callback(user, pcm)
+                    self._consecutive_failures[user.id] = 0
                 except Exception as e:
-                    logger.debug(
-                        f"Opus decode failed user {user.id} seq {_seq}: {e} "
-                        f"— resetting decoder"
-                    )
-                    decoder = opus_mod.Decoder()
-                    self._decoders[user.id] = decoder
+                    fails = self._consecutive_failures.get(user.id, 0) + 1
+                    self._consecutive_failures[user.id] = fails
+
+                    if fails >= DECODER_RESET_THRESHOLD:
+                        # Genuine stream break — reset decoder and counter
+                        decoder = opus_mod.Decoder()
+                        self._decoders[user.id] = decoder
+                        self._consecutive_failures[user.id] = 0
+                        logger.debug(
+                            f"Opus decoder reset for user {user.id} seq {_seq}: "
+                            f"{fails} consecutive failures"
+                        )
+                    else:
+                        logger.debug(
+                            f"Opus decode failed user {user.id} seq {_seq}: {e} "
+                            f"— skipping frame ({fails}/{DECODER_RESET_THRESHOLD})"
+                        )
+
+                    # Output silence for this frame instead of glitchy audio
+                    self._callback(user, SILENCE_FRAME)
                 i += 1
                 continue
 
@@ -330,6 +347,7 @@ class _PerUserPCMSink(voice_recv.AudioSink):
     def cleanup(self):
         self._jitter.clear()
         self._decoders.clear()
+        self._consecutive_failures.clear()
 
 
 class VoiceRecorder:
