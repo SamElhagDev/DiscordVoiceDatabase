@@ -152,6 +152,21 @@ class DatabaseManager:
         async with rows as cursor:
             return await cursor.fetchall()
 
+    async def get_expired_segments_per_guild(self, default_retention_days: int) -> list:
+        """Get expired segments respecting per-guild retention settings.
+        Falls back to *default_retention_days* for guilds without custom settings."""
+        now = time.time()
+        rows = await self.connection.execute(
+            """SELECT s.id, s.file_path
+               FROM segments s
+               LEFT JOIN recording_settings rs ON s.guild_id = rs.guild_id
+               WHERE s.end_ts IS NOT NULL
+                 AND s.end_ts < ? - (COALESCE(rs.retention_days, ?) * 86400)""",
+            (now, default_retention_days),
+        )
+        async with rows as cursor:
+            return await cursor.fetchall()
+
     async def delete_segments_by_ids(self, segment_ids: list):
         if not segment_ids:
             return

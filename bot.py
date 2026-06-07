@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 import platform
 import random
@@ -26,30 +27,19 @@ os.makedirs(RECORDINGS_PATH, exist_ok=True)
 os.makedirs(CLIPS_PATH, exist_ok=True)
 
 
-intents = discord.Intents.default()
-intents.bans = True
-intents.dm_messages = True
-intents.dm_reactions = True
-intents.dm_typing = True
-intents.emojis = True
-intents.emojis_and_stickers = True
-intents.guild_messages = True
-intents.guild_reactions = True
-intents.guild_typing = True
-intents.guilds = True
-intents.integrations = True 
-intents.invites = True
-intents.messages = True
-intents.reactions = True
-intents.typing = True
-intents.voice_states = True
-intents.webhooks = True
-intents.members = True
-intents.message_content = True
-intents.presences = True
+# Only enable intents the bot actually uses — reduces gateway event volume.
+# Notably excludes presences (heaviest intent), typing, reactions, bans, etc.
+intents = discord.Intents.none()
+intents.guilds = True          # guild create/update/delete, channel events
+intents.voice_states = True    # voice state updates (core functionality)
+intents.guild_messages = True  # prefix command processing
+intents.message_content = True # read message content for prefix commands
+intents.members = True         # member lookups (get_member, display_name)
 
 
 class LoggingFormatter(logging.Formatter):
+    """Coloured console formatter with per-level ANSI codes (cached)."""
+
     black = "\x1b[30m"
     red = "\x1b[31m"
     green = "\x1b[32m"
@@ -67,14 +57,29 @@ class LoggingFormatter(logging.Formatter):
         logging.CRITICAL: red + bold,
     }
 
+    def __init__(self):
+        super().__init__()
+        # Pre-build a Formatter per log level so format() doesn't construct one per call
+        self._formatters: dict[int, logging.Formatter] = {}
+        for level, color in self.COLORS.items():
+            fmt = (
+                f"{self.black}{self.bold}{{asctime}}{self.reset} "
+                f"{color}{{levelname:<8}}{self.reset} "
+                f"{self.green}{self.bold}{{name}}{self.reset} {{message}}"
+            )
+            self._formatters[level] = logging.Formatter(fmt, "%Y-%m-%d %H:%M:%S", style="{")
+
     def format(self, record):
-        log_color = self.COLORS.get(record.levelno, self.gray)
-        format = "(black){asctime}(reset) (levelcolor){levelname:<8}(reset) (green){name}(reset) {message}"
-        format = format.replace("(black)", self.black + self.bold)
-        format = format.replace("(reset)", self.reset)
-        format = format.replace("(levelcolor)", log_color)
-        format = format.replace("(green)", self.green + self.bold)
-        formatter = logging.Formatter(format, "%Y-%m-%d %H:%M:%S", style="{")
+        formatter = self._formatters.get(record.levelno)
+        if formatter is None:
+            # Fallback for unexpected log levels — cache on first encounter
+            fmt = (
+                f"{self.black}{self.bold}{{asctime}}{self.reset} "
+                f"{self.gray}{{levelname:<8}}{self.reset} "
+                f"{self.green}{self.bold}{{name}}{self.reset} {{message}}"
+            )
+            formatter = logging.Formatter(fmt, "%Y-%m-%d %H:%M:%S", style="{")
+            self._formatters[record.levelno] = formatter
         return formatter.format(record)
 
 
@@ -83,7 +88,13 @@ logger.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
-file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
+
+# Single rotating file handler shared by all loggers — caps disk usage
+file_handler = logging.handlers.RotatingFileHandler(
+    filename="discord.log", encoding="utf-8", mode="a",
+    maxBytes=10 * 1024 * 1024,  # 10 MB per file
+    backupCount=5,              # keep 5 rotated files (50 MB total)
+)
 file_handler_formatter = logging.Formatter(
     "[{asctime}] [{levelname:<8}] {name}: {message}", "%Y-%m-%d %H:%M:%S", style="{"
 )
@@ -92,16 +103,14 @@ file_handler.setFormatter(file_handler_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
-_lib_file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
-_lib_file_handler.setFormatter(file_handler_formatter)
-
+# Library loggers share the same rotating file handler (single fd, no buffering quirks)
 _voice_logger = logging.getLogger("discord.voice_client")
 _voice_logger.setLevel(logging.DEBUG)
-_voice_logger.addHandler(_lib_file_handler)
+_voice_logger.addHandler(file_handler)
 
 _gateway_logger = logging.getLogger("discord.gateway")
 _gateway_logger.setLevel(logging.WARNING)
-_gateway_logger.addHandler(_lib_file_handler)
+_gateway_logger.addHandler(file_handler)
 
 
 class DiscordBot(commands.Bot):
@@ -116,27 +125,27 @@ class DiscordBot(commands.Bot):
         self.bot_prefix = os.getenv("DiscordVoiceDatabase_PREFIX", "!")
         self.invite_link = os.getenv("DiscordVoiceDatabase_INVITE_LINK", "")
 
-    async def init_db(self) -> None:
+    async def _init_schema(self, connection: aiosqlite.Connection) -> None:
+        """Initialize database schema on the live connection."""
         self.logger.info("Initializing database schema...")
-        async with aiosqlite.connect(DB_PATH) as db:
-            with open(
-                os.path.join(os.path.realpath(os.path.dirname(__file__)), "database", "schema.sql"),
-                encoding="utf-8",
-            ) as file:
-                await db.executescript(file.read())
-            await db.commit()
+        with open(
+            os.path.join(os.path.realpath(os.path.dirname(__file__)), "database", "schema.sql"),
+            encoding="utf-8",
+        ) as file:
+            await connection.executescript(file.read())
+        await connection.commit()
 
-            # Apply migrations (safe to re-run)
-            migrations = [
-                "ALTER TABLE segments ADD COLUMN transcript TEXT",
-            ]
-            for sql in migrations:
-                try:
-                    await db.execute(sql)
-                    await db.commit()
-                    self.logger.info(f"Applied migration: {sql}")
-                except Exception:
-                    pass  # column already exists
+        # Apply migrations (safe to re-run)
+        migrations = [
+            "ALTER TABLE segments ADD COLUMN transcript TEXT",
+        ]
+        for sql in migrations:
+            try:
+                await connection.execute(sql)
+                await connection.commit()
+                self.logger.info(f"Applied migration: {sql}")
+            except Exception:
+                pass  # column already exists
         self.logger.info("Database schema ready")
 
     async def load_cogs(self) -> None:
@@ -178,10 +187,14 @@ class DiscordBot(commands.Bot):
         self.logger.info(f"Recordings: {RECORDINGS_PATH}")
         self.logger.info(f"Clips: {CLIPS_PATH}")
         self.logger.info("-------------------")
-        await self.init_db()
-        self.database = DatabaseManager(
-            connection=await aiosqlite.connect(DB_PATH)
-        )
+
+        # Open the long-lived connection, enable WAL for concurrent read/write,
+        # then init schema — all on the SAME connection object.
+        connection = await aiosqlite.connect(DB_PATH)
+        await connection.execute("PRAGMA journal_mode=WAL")
+        await self._init_schema(connection)
+
+        self.database = DatabaseManager(connection=connection)
         await self.load_cogs()
         self.status_task.start()
 
@@ -258,6 +271,8 @@ class DiscordBot(commands.Bot):
             await context.send(embed=embed)
         elif isinstance(error, commands.CommandNotFound):
             pass  # ignore unknown commands silently
+        elif isinstance(error, commands.CheckFailure):
+            pass  # handled by cog-level checks (e.g. guild-only cog_check)
         elif isinstance(error, commands.CommandInvokeError):
             self.logger.error(
                 f"Command '{context.command}' raised an exception: {error.original}",

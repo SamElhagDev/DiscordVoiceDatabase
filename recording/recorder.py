@@ -62,9 +62,8 @@ class UserStream:
         if buf_size == 0:
             logger.debug(f"UserStream flush: no data for user {self.user_id}")
             return None
-        self.buffer.seek(0)
         with open(self.pcm_path, "wb") as f:
-            f.write(self.buffer.read())
+            f.write(self.buffer.getvalue())
         logger.debug(f"UserStream flush: wrote {buf_size} bytes to {self.pcm_path}")
         return self.pcm_path
 
@@ -368,8 +367,19 @@ class _PerUserPCMSink(voice_recv.AudioSink):
 
     def _get_dave_session(self):
         vc = self._voice_client
-        conn = getattr(vc, "_connection", None) if vc else None
-        return getattr(conn, "dave_session", None) if conn else None
+        if vc is None:
+            return None
+        try:
+            conn = vc._connection
+            return getattr(conn, "dave_session", None)
+        except AttributeError:
+            if not getattr(self, "_dave_warning_logged", False):
+                logger.warning(
+                    "DAVE session lookup failed — discord.py internals may have changed. "
+                    "E2EE decryption disabled for this session."
+                )
+                self._dave_warning_logged = True
+            return None
 
     def cleanup(self):
         self._jitter.clear()
@@ -453,7 +463,10 @@ class VoiceRecorder:
         for user_id in user_ids:
             await self._rotate_user(user_id, final=True)
 
-        await self._remux_queue.join()
+        try:
+            await asyncio.wait_for(self._remux_queue.join(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning("Remux queue did not drain within 30s — proceeding with shutdown")
         if self._remux_task:
             self._remux_task.cancel()
             try:
@@ -630,7 +643,7 @@ class VoiceRecorder:
     def _remux_pcm_to_ogg(pcm_path: str, ogg_path: str):
         """Convert raw PCM to OGG/Opus using ffmpeg. Runs in a thread."""
         cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-loglevel", "error",
             "-f", "s16le",
             "-ar", str(SAMPLE_RATE),
             "-ac", str(CHANNELS),

@@ -93,6 +93,20 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 await recorder.stop()
         logger.info("VoiceDatabase cog unloaded")
 
+    async def cog_check(self, ctx: Context) -> bool:
+        """All commands in this cog require a guild context."""
+        if ctx.guild is None:
+            await ctx.send("This command can only be used in a server.")
+            return False
+        return True
+
+    async def cog_command_error(self, ctx: Context, error: Exception) -> None:
+        """Suppress CheckFailure from cog_check — the message was already sent."""
+        if isinstance(error, commands.CheckFailure):
+            return
+        # Let other errors propagate to the bot-level handler
+        raise error
+
     async def _connect_voice(self, channel: discord.VoiceChannel) -> discord.VoiceClient | None:
         """Connect to a voice channel, clearing any stale session first.
         Returns the VoiceClient or None on failure."""
@@ -123,6 +137,180 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                     logger.error("Voice connect failed after 3 attempts")
                     return None
 
+    # ── Helper methods ─────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_date_range(date: str | None, end_date: str | None) -> tuple[float, float, str]:
+        """Parse date/end_date strings into (start_ts, end_ts, date_label).
+        Raises ValueError with a user-facing message on invalid input."""
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+        except ValueError:
+            raise ValueError("Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).")
+
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                raise ValueError("Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).")
+            if range_end < day_start:
+                raise ValueError("End date must be on or after the start date.")
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
+
+        return day_start.timestamp(), day_end.timestamp(), date_label
+
+    @staticmethod
+    def _parse_search_date_range(
+        date: str | None, end_date: str | None, query: str
+    ) -> tuple[float, float, str, str]:
+        """Like _parse_date_range but folds invalid dates into the query for search commands.
+        Returns (start_ts, end_ts, date_label, updated_query).
+        Raises ValueError only for end_date < start_date."""
+        if not date:
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
+        try:
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+        except ValueError:
+            # Treat the invalid date as part of the search query
+            query = f"{date} {end_date} {query}".strip() if end_date else f"{date} {query}".strip()
+            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
+            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            end_date = None
+
+        range_end = None
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except ValueError:
+                query = f"{end_date} {query}".strip()
+                end_date = None
+
+        if range_end is not None:
+            if range_end < day_start:
+                raise ValueError("End date must be on or after the start date.")
+            day_end = range_end + timedelta(days=1)
+            date_label = f"{date} to {end_date}"
+        else:
+            day_end = day_start + timedelta(days=1)
+            date_label = date
+
+        return day_start.timestamp(), day_end.timestamp(), date_label, query
+
+    @staticmethod
+    def _filter_blank_segments(segments: list) -> list:
+        """Remove segments with 'Blank' transcripts."""
+        return [
+            seg for seg in segments
+            if not (len(seg) > 8 and seg[8] == "Blank")
+        ]
+
+    async def _play_audio_in_voice(
+        self,
+        guild: discord.Guild,
+        voice_channel: discord.VoiceChannel,
+        clip_path: str,
+        *,
+        timeout: float = 300.0,
+    ) -> str | None:
+        """
+        Play clip_path in voice_channel. Manages VC connection, recorder
+        pause/resume, chimes, and file cleanup.
+
+        Returns None on success, or an error message string on failure.
+        Always deletes clip_path when done.
+        """
+        recorder = self.recorders.get(guild.id)
+        is_recording = recorder is not None
+        joined_for_playback = False
+        vc = guild.voice_client
+
+        # ── Connect or reuse voice ────────────────────────────────
+        if vc is None or not vc.is_connected():
+            if is_recording:
+                self._cleanup_file(clip_path)
+                return ("Recording session lost its voice connection. "
+                        "Use `/stoprecord` then `/record` to restart.")
+            try:
+                vc = await voice_channel.connect()
+                joined_for_playback = True
+                await asyncio.sleep(2)
+            except Exception as e:
+                self._cleanup_file(clip_path)
+                return f"Failed to connect to voice: {e}"
+        elif not is_recording and vc.channel != voice_channel:
+            # Only move when not recording; moving while recording breaks the session.
+            await vc.move_to(voice_channel)
+            await asyncio.sleep(1)
+        # If recording is active and user is in a different channel, the clip plays
+        # in the recording channel — the bot does not move.
+
+        if vc.is_playing():
+            vc.stop()
+
+        # ── Play with chimes ──────────────────────────────────────
+        loop = asyncio.get_running_loop()
+        done_event = asyncio.Event()
+        playback_error = [None]
+
+        def after_play(error):
+            playback_error[0] = error
+            if error:
+                logger.error(f"Playback error: {error}")
+            loop.call_soon_threadsafe(done_event.set)
+
+        if recorder:
+            recorder.pause_listening()
+
+        await _play_chime(vc, CHIME_START)
+
+        try:
+            source = discord.FFmpegOpusAudio(clip_path)
+            vc.play(source, after=after_play)
+        except Exception as e:
+            logger.error(f"vc.play() failed: {e}")
+            if recorder:
+                recorder.resume_listening()
+            self._cleanup_file(clip_path)
+            return f"Failed to start playback: `{e}`"
+
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"Playback timed out after {timeout}s, stopping")
+            if vc.is_playing():
+                vc.stop()
+
+        await _play_chime(vc, CHIME_END)
+
+        # Always resume the recording sink
+        if recorder:
+            recorder.resume_listening()
+
+        error_msg = f"Playback failed: `{playback_error[0]}`" if playback_error[0] else None
+
+        self._cleanup_file(clip_path)
+
+        if joined_for_playback and not is_recording:
+            await vc.disconnect()
+
+        return error_msg
+
+    @staticmethod
+    def _cleanup_file(path: str):
+        """Remove a file, ignoring errors if it doesn't exist."""
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
     # ── Participation commands ──────────────────────────────────────────
 
     @commands.hybrid_command(
@@ -130,10 +318,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         description="Opt in to voice recording. Your audio will be recorded when the bot is active.",
     )
     async def register_user(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         newly_registered = await self.bot.database.register_user(
             guild_id=context.guild.id,
             user_id=context.author.id,
@@ -163,10 +347,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         description="Opt out of voice recording. Your audio will no longer be recorded.",
     )
     async def unregister_user(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         was_registered = await self.bot.database.unregister_user(
             guild_id=context.guild.id,
             user_id=context.author.id,
@@ -193,10 +373,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         description="List all users opted in to voice recording in this server.",
     )
     async def list_participants(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         participants = await self.bot.database.get_participants(context.guild.id)
 
         if not participants:
@@ -228,10 +404,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def start_recording(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         if context.guild.id in self.recorders:
             await context.send(
                 embed=discord.Embed(
@@ -302,10 +474,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def stop_recording(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         recorder = self.recorders.pop(context.guild.id, None)
         if recorder is None:
             await context.send(
@@ -353,62 +521,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         date: str = None,
         end_date: str = None,
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
-        if not date:
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-        except ValueError:
-            await context.send(
-                embed=discord.Embed(
-                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                    color=0xED4245,
-                )
-            )
+            start_ts, end_ts, date_label = self._parse_date_range(date, end_date)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
             return
-
-        if end_date:
-            try:
-                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            except ValueError:
-                await context.send(
-                    embed=discord.Embed(
-                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                        color=0xED4245,
-                    )
-                )
-                return
-            if range_end < day_start:
-                await context.send(
-                    embed=discord.Embed(
-                        description="End date must be on or after the start date.",
-                        color=0xED4245,
-                    )
-                )
-                return
-            day_end = range_end + timedelta(days=1)
-            date_label = f"{date} to {end_date}"
-        else:
-            day_end = day_start + timedelta(days=1)
-            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
-            user_id=user.id,
-            start_ts=day_start.timestamp(),
-            end_ts=day_end.timestamp(),
-            guild_id=context.guild.id,
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, guild_id=context.guild.id,
         )
-
-        segments = []
-        for seg in all_segments:
-            transcript = seg[8] if len(seg) > 8 else None
-            if transcript == "Blank":
-                continue
-            segments.append(seg)
+        segments = self._filter_blank_segments(all_segments)
 
         logger.info(f"/clip: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
@@ -426,7 +548,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             invoker_id=context.author.id, date=date_label, mode="download",
         )
         embed = view.build_embed()
-        await context.send(embed=embed, view=view)
+        view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="transcribe",
@@ -434,9 +556,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def transcribe_past(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
         if not self.transcriber:
             await context.send(embed=discord.Embed(description="Transcription service is not running.", color=0xED4245))
             return
@@ -458,7 +577,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         done = 0
         for seg_id, file_path in valid:
             try:
-                transcript = await asyncio.to_thread(self.transcriber._transcribe, file_path)
+                transcript = await asyncio.to_thread(self.transcriber.transcribe_file, file_path)
             except Exception as e:
                 logger.error(f"Backfill transcription failed for segment {seg_id}: {e}")
                 transcript = ""
@@ -496,62 +615,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         date: str = None,
         end_date: str = None,
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
-        if not date:
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-        except ValueError:
-            await context.send(
-                embed=discord.Embed(
-                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-03`).",
-                    color=0xED4245,
-                )
-            )
+            start_ts, end_ts, date_label = self._parse_date_range(date, end_date)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
             return
-
-        if end_date:
-            try:
-                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            except ValueError:
-                await context.send(
-                    embed=discord.Embed(
-                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                        color=0xED4245,
-                    )
-                )
-                return
-            if range_end < day_start:
-                await context.send(
-                    embed=discord.Embed(
-                        description="End date must be on or after the start date.",
-                        color=0xED4245,
-                    )
-                )
-                return
-            day_end = range_end + timedelta(days=1)
-            date_label = f"{date} to {end_date}"
-        else:
-            day_end = day_start + timedelta(days=1)
-            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
-            user_id=user.id,
-            start_ts=day_start.timestamp(),
-            end_ts=day_end.timestamp(),
-            guild_id=context.guild.id,
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, guild_id=context.guild.id,
         )
-
-        segments = []
-        for seg in all_segments:
-            transcript = seg[8] if len(seg) > 8 else None
-            if transcript == "Blank":
-                continue
-            segments.append(seg)
+        segments = self._filter_blank_segments(all_segments)
 
         logger.info(f"/listclips: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
@@ -569,7 +642,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             invoker_id=context.author.id, date=date_label,
         )
         embed = view.build_embed()
-        await context.send(embed=embed, view=view)
+        view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="listtext",
@@ -587,62 +660,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         date: str = None,
         end_date: str = None,
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
-        if not date:
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-        except ValueError:
-            await context.send(
-                embed=discord.Embed(
-                    description="Invalid date format. Use `YYYY-MM-DD` (e.g. `2026-05-03`).",
-                    color=0xED4245,
-                )
-            )
+            start_ts, end_ts, date_label = self._parse_date_range(date, end_date)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
             return
-
-        if end_date:
-            try:
-                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            except ValueError:
-                await context.send(
-                    embed=discord.Embed(
-                        description="Invalid end date format. Use `YYYY-MM-DD` (e.g. `2026-05-05`).",
-                        color=0xED4245,
-                    )
-                )
-                return
-            if range_end < day_start:
-                await context.send(
-                    embed=discord.Embed(
-                        description="End date must be on or after the start date.",
-                        color=0xED4245,
-                    )
-                )
-                return
-            day_end = range_end + timedelta(days=1)
-            date_label = f"{date} to {end_date}"
-        else:
-            day_end = day_start + timedelta(days=1)
-            date_label = date
 
         all_segments = await self.bot.database.get_segments_in_range(
-            user_id=user.id,
-            start_ts=day_start.timestamp(),
-            end_ts=day_end.timestamp(),
-            guild_id=context.guild.id,
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, guild_id=context.guild.id,
         )
-
-        segments = []
-        for seg in all_segments:
-            transcript = seg[8] if len(seg) > 8 else None
-            if transcript == "Blank":
-                continue
-            segments.append(seg)
+        segments = self._filter_blank_segments(all_segments)
 
         logger.info(f"/listtext: user={user.id} date={date_label} — {len(all_segments)} total, {len(segments)} after filter")
 
@@ -660,7 +687,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             invoker_id=context.author.id, date=date_label, mode="text",
         )
         embed = view.build_embed()
-        await context.send(embed=embed, view=view)
+        view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="search",
@@ -681,59 +708,20 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         *,
         query: str = "",
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
-        if not date:
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-        except ValueError:
-            query = f"{date} {end_date} {query}".strip() if end_date else f"{date} {query}".strip()
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            end_date = None
-
-        range_end = None
-        if end_date:
-            try:
-                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            except ValueError:
-                query = f"{end_date} {query}".strip()
-                end_date = None
-
-        if range_end is not None:
-            if range_end < day_start:
-                await context.send(
-                    embed=discord.Embed(
-                        description="End date must be on or after the start date.",
-                        color=0xED4245,
-                    )
-                )
-                return
-            day_end = range_end + timedelta(days=1)
-            date_label = f"{date} to {end_date}"
-        else:
-            day_end = day_start + timedelta(days=1)
-            date_label = date
+            start_ts, end_ts, date_label, query = self._parse_search_date_range(date, end_date, query)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
+            return
 
         if not query:
             await context.send(
-                embed=discord.Embed(
-                    description="Please provide a search query.",
-                    color=0xED4245,
-                )
+                embed=discord.Embed(description="Please provide a search query.", color=0xED4245)
             )
             return
 
         segments = await self.bot.database.search_segments_by_transcript(
-            user_id=user.id,
-            start_ts=day_start.timestamp(),
-            end_ts=day_end.timestamp(),
-            query=query,
-            guild_id=context.guild.id,
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, query=query, guild_id=context.guild.id,
         )
 
         logger.info(f"/search: user={user.id} date={date_label} query=\"{query}\" — {len(segments)} result(s)")
@@ -752,7 +740,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             invoker_id=context.author.id, date=f"{date_label} — \"{query}\"",
         )
         embed = view.build_embed()
-        await context.send(embed=embed, view=view)
+        view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="searchtext",
@@ -773,59 +761,20 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         *,
         query: str = "",
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
-        if not date:
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
         try:
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-        except ValueError:
-            query = f"{date} {end_date} {query}".strip() if end_date else f"{date} {query}".strip()
-            date = datetime.now(EASTERN).strftime("%Y-%m-%d")
-            day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            end_date = None
-
-        range_end = None
-        if end_date:
-            try:
-                range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=EASTERN)
-            except ValueError:
-                query = f"{end_date} {query}".strip()
-                end_date = None
-
-        if range_end is not None:
-            if range_end < day_start:
-                await context.send(
-                    embed=discord.Embed(
-                        description="End date must be on or after the start date.",
-                        color=0xED4245,
-                    )
-                )
-                return
-            day_end = range_end + timedelta(days=1)
-            date_label = f"{date} to {end_date}"
-        else:
-            day_end = day_start + timedelta(days=1)
-            date_label = date
+            start_ts, end_ts, date_label, query = self._parse_search_date_range(date, end_date, query)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
+            return
 
         if not query:
             await context.send(
-                embed=discord.Embed(
-                    description="Please provide a search query.",
-                    color=0xED4245,
-                )
+                embed=discord.Embed(description="Please provide a search query.", color=0xED4245)
             )
             return
 
         segments = await self.bot.database.search_segments_by_transcript(
-            user_id=user.id,
-            start_ts=day_start.timestamp(),
-            end_ts=day_end.timestamp(),
-            query=query,
-            guild_id=context.guild.id,
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, query=query, guild_id=context.guild.id,
         )
 
         logger.info(f"/searchtext: user={user.id} date={date_label} query=\"{query}\" — {len(segments)} result(s)")
@@ -845,7 +794,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             mode="text",
         )
         embed = view.build_embed()
-        await context.send(embed=embed, view=view)
+        view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="playclip",
@@ -863,10 +812,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         start: str,
         minutes: int = 10,
     ) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         is_registered = await self.bot.database.is_user_registered(
             context.guild.id, user.id
         )
@@ -934,95 +879,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        # Connect to VC if not already there; reuse existing connection if recording.
-        # IMPORTANT: never call move_to() while recording is active — that tears down
-        # the VoiceRecvClient and breaks the recording session.
-        recorder = self.recorders.get(context.guild.id)
-        is_recording = recorder is not None
-        joined_for_playback = False
-        vc = context.guild.voice_client
-
-        if vc is None or not vc.is_connected():
-            if is_recording:
-                # Recorder exists but voice_client is gone — inconsistent state.
-                await context.send(
-                    embed=discord.Embed(
-                        description="Recording session lost its voice connection. Use `/stoprecord` then `/record` to restart.",
-                        color=0xED4245,
-                    )
-                )
-                try:
-                    os.remove(clip_path)
-                except OSError:
-                    pass
-                return
-            try:
-                vc = await voice_channel.connect()
-                joined_for_playback = True
-                await asyncio.sleep(2)
-            except Exception as e:
-                await context.send(
-                    embed=discord.Embed(
-                        description=f"Failed to connect to voice: {e}",
-                        color=0xED4245,
-                    )
-                )
-                try:
-                    os.remove(clip_path)
-                except OSError:
-                    pass
-                return
-        elif not is_recording and vc.channel != voice_channel:
-            # Only move when not recording; moving while recording breaks the session.
-            await vc.move_to(voice_channel)
-            await asyncio.sleep(1)
-        # If recording is active and user is in a different channel, the clip plays in
-        # the recording channel — the bot does not move.
-
-        if vc.is_playing():
-            vc.stop()
-
-        loop = asyncio.get_running_loop()
-        done_event = asyncio.Event()
-        playback_error = [None]
-
-        def after_play(error):
-            playback_error[0] = error
-            if error:
-                logger.error(f"Playback error: {error}")
-            loop.call_soon_threadsafe(done_event.set)
-
-        # Pause the recording sink before playback so the send/receive pipelines
-        # don't interfere with each other inside VoiceRecvClient.
-        if recorder:
-            recorder.pause_listening()
-
-        # Start chime — signals the clip is about to begin.
-        await _play_chime(vc, CHIME_START)
-
-        logger.info(
-            f"play_clip: starting playback user={user.id} recording_active={is_recording} "
-            f"channel=#{vc.channel.name}"
-        )
-        try:
-            source = discord.FFmpegOpusAudio(clip_path)
-            vc.play(source, after=after_play)
-        except Exception as e:
-            logger.error(f"play_clip: vc.play() failed: {e}")
-            if recorder:
-                recorder.resume_listening()
-            await context.send(
-                embed=discord.Embed(
-                    description=f"Failed to start playback: `{e}`",
-                    color=0xED4245,
-                )
-            )
-            try:
-                os.remove(clip_path)
-            except OSError:
-                pass
-            return
-
         await context.send(
             embed=discord.Embed(
                 description=f"Playing clip for {user.mention} ({minutes} min from `{start}`).",
@@ -1030,46 +886,19 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
         )
 
-        try:
-            await asyncio.wait_for(done_event.wait(), timeout=300.0)
-        except asyncio.TimeoutError:
-            logger.warning("play_clip: playback timed out after 300s, stopping")
-            if vc.is_playing():
-                vc.stop()
-
-        # End chime — signals the clip has finished.
-        await _play_chime(vc, CHIME_END)
-
-        # Always resume the recording sink — whether playback succeeded, errored, or timed out.
-        if recorder:
-            recorder.resume_listening()
-
-        if playback_error[0]:
-            await context.send(
-                embed=discord.Embed(
-                    description=f"Playback failed: `{playback_error[0]}`",
-                    color=0xED4245,
-                )
-            )
-
-        try:
-            os.remove(clip_path)
-        except OSError:
-            pass
-
-        # Never disconnect if the bot was already in the channel for recording.
-        if joined_for_playback and not is_recording:
-            await vc.disconnect()
+        logger.info(
+            f"play_clip: starting playback user={user.id} "
+            f"channel=#{voice_channel.name}"
+        )
+        error = await self._play_audio_in_voice(context.guild, voice_channel, clip_path)
+        if error:
+            await context.send(embed=discord.Embed(description=error, color=0xED4245))
 
     @commands.hybrid_command(
         name="stop",
         description="Stop the currently playing clip.",
     )
     async def stop_playback(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         vc = context.guild.voice_client
         if vc is None or not vc.is_playing():
             await context.send(embed=discord.Embed(
@@ -1093,10 +922,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def set_channel(self, context: Context, channel: discord.VoiceChannel) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         await self.bot.database.set_primary_channel(context.guild.id, channel.id)
         await context.send(
             embed=discord.Embed(
@@ -1111,10 +936,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def set_retention(self, context: Context, days: int) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         if days < 1 or days > 365:
             await context.send(
                 embed=discord.Embed(
@@ -1137,10 +958,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         description="Show current recording status.",
     )
     async def recording_status(self, context: Context) -> None:
-        if context.guild is None:
-            await context.send("This command can only be used in a server.")
-            return
-
         recorder = self.recorders.get(context.guild.id)
         settings = await self.bot.database.get_settings(context.guild.id)
         participants = await self.bot.database.get_participants(context.guild.id)
@@ -1511,89 +1328,12 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
             return
 
-        recorder = self.cog.recorders.get(guild.id)
-        is_recording = recorder is not None
-        joined_for_playback = False
-        vc = guild.voice_client
-
-        if vc is None or not vc.is_connected():
-            if is_recording:
-                await interaction.followup.send(
-                    embed=discord.Embed(
-                        description="Recording session lost its voice connection. Use `/stoprecord` then `/record` to restart.",
-                        color=0xED4245,
-                    ),
-                    ephemeral=True,
-                )
-                try:
-                    os.remove(clip_path)
-                except OSError:
-                    pass
-                return
-            try:
-                vc = await voice_channel.connect()
-                joined_for_playback = True
-                await asyncio.sleep(2)
-            except Exception as e:
-                await interaction.followup.send(
-                    embed=discord.Embed(description=f"Failed to connect: {e}", color=0xED4245),
-                    ephemeral=True,
-                )
-                try:
-                    os.remove(clip_path)
-                except OSError:
-                    pass
-                return
-        elif not is_recording and vc.channel != voice_channel:
-            # Only move when not recording; moving while recording breaks the session.
-            await vc.move_to(voice_channel)
-            await asyncio.sleep(1)
-        # If recording is active and user is in a different channel, clip plays in
-        # the recording channel — the bot does not move.
-
-        if vc.is_playing():
-            vc.stop()
-
-        loop = asyncio.get_running_loop()
-        done_event = asyncio.Event()
-        playback_error = [None]
-
-        def after_play(error):
-            playback_error[0] = error
-            if error:
-                logger.error(f"Playback error: {error}")
-            loop.call_soon_threadsafe(done_event.set)
-
-        # Pause the recording sink before playback to avoid send/receive interference.
-        if recorder:
-            recorder.pause_listening()
-
-        # Start chime — signals the clip is about to begin.
-        await _play_chime(vc, CHIME_START)
-
         play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
         logger.info(
             f"PlayModal: starting playback seg={self.seg[0]} user={self.target_user.id} "
-            f"at {start_str} ({duration_minutes} min) recording_active={is_recording} "
-            f"channel=#{vc.channel.name}"
+            f"at {start_str} ({duration_minutes} min)"
         )
-        try:
-            source = discord.FFmpegOpusAudio(clip_path)
-            vc.play(source, after=after_play)
-        except Exception as e:
-            logger.error(f"PlayModal: vc.play() failed: {e}")
-            if recorder:
-                recorder.resume_listening()
-            await interaction.followup.send(
-                embed=discord.Embed(description=f"Failed to start playback: `{e}`", color=0xED4245),
-                ephemeral=True,
-            )
-            try:
-                os.remove(clip_path)
-            except OSError:
-                pass
-            return
 
         await interaction.followup.send(
             embed=discord.Embed(
@@ -1602,36 +1342,12 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
             )
         )
 
-        try:
-            await asyncio.wait_for(done_event.wait(), timeout=300.0)
-        except asyncio.TimeoutError:
-            logger.warning(f"PlayModal: playback timed out after 300s for segment {self.seg[0]}")
-            if vc.is_playing():
-                vc.stop()
-
-        # End chime — signals the clip has finished.
-        await _play_chime(vc, CHIME_END)
-
-        # Always resume the recording sink — whether playback succeeded, errored, or timed out.
-        if recorder:
-            recorder.resume_listening()
-
-        if playback_error[0]:
+        error = await self.cog._play_audio_in_voice(guild, voice_channel, clip_path)
+        if error:
             await interaction.followup.send(
-                embed=discord.Embed(
-                    description=f"Playback failed: `{playback_error[0]}`",
-                    color=0xED4245,
-                )
+                embed=discord.Embed(description=error, color=0xED4245),
+                ephemeral=True,
             )
-
-        try:
-            os.remove(clip_path)
-        except OSError:
-            pass
-
-        # Never disconnect if the bot was already in the channel for recording.
-        if joined_for_playback and not is_recording:
-            await vc.disconnect()
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.error(f"PlayModal error: {error}", exc_info=True)
@@ -1763,6 +1479,7 @@ class _ClipSelectView(discord.ui.View):
         self.page = 0
         self.per_page = 10
         self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
+        self.message = None  # set by caller for on_timeout
         self._rebuild_items()
 
     def _page_segments(self):
@@ -1844,6 +1561,18 @@ class _ClipSelectView(discord.ui.View):
             action = "play"
         embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action}")
         return embed
+
+    async def on_timeout(self):
+        """Disable all items when the view times out so stale menus don't confuse users."""
+        for item in self.children:
+            item.disabled = True
+        try:
+            if self.message:
+                embed = self.build_embed()
+                embed.set_footer(text="This menu has timed out. Run the command again to browse.")
+                await self.message.edit(embed=embed, view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
     async def _first_page(self, interaction: discord.Interaction):
         self.page = 0

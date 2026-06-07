@@ -41,7 +41,7 @@ class SegmentCleanup:
 
     async def _run_cleanup(self):
         try:
-            old_segments = await self.db.get_expired_segments(self.default_retention_days)
+            old_segments = await self.db.get_expired_segments_per_guild(self.default_retention_days)
             if not old_segments:
                 return
 

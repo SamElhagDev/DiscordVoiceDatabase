@@ -200,7 +200,7 @@ class ClipRetriever:
         _cp = ClipRetriever._COMPAND
         if input_path.endswith(".pcm"):
             cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-y", "-loglevel", "error",
                 "-f", "s16le", "-ar", "48000", "-ac", "2",
                 "-i", input_path,
                 "-filter_complex",
@@ -213,7 +213,7 @@ class ClipRetriever:
             ]
         else:
             cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-filter_complex",
                 f"[0:a]adeclick[clean];{_cn}[noise];[clean][noise]{_nm}[mixed];[mixed]{_cp}[out]",
@@ -241,7 +241,7 @@ class ClipRetriever:
                 if f.endswith(".pcm"):
                     tmp_ogg = os.path.splitext(f)[0] + "_tmp.ogg"
                     cmd = [
-                        "ffmpeg", "-y",
+                        "ffmpeg", "-y", "-loglevel", "error",
                         "-f", "s16le", "-ar", "48000", "-ac", "2",
                         "-i", f,
                         "-c:a", "libopus", "-b:a", "128k", "-ac", "1",
@@ -264,7 +264,7 @@ class ClipRetriever:
             # adeclick is applied after the final crossfade (can't mix -af with
             # -filter_complex in FFmpeg); on clean audio it is effectively a no-op.
             n = len(normalized)
-            cmd = ["ffmpeg", "-y"]
+            cmd = ["ffmpeg", "-y", "-loglevel", "error"]
             for f in normalized:
                 cmd.extend(["-i", f])
 

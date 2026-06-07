@@ -32,7 +32,16 @@ class Transcriber:
 
     def start(self):
         self._task = asyncio.create_task(self._worker())
+        self._load_task = asyncio.create_task(self._eager_load_model())
         logger.info("Transcription worker started")
+
+    async def _eager_load_model(self):
+        """Load the Whisper model eagerly so the first transcription isn't delayed."""
+        try:
+            await asyncio.to_thread(self._load_model)
+            logger.info("Whisper model pre-loaded successfully")
+        except Exception as e:
+            logger.warning(f"Eager model load failed (will retry on first transcription): {e}")
 
     def stop(self):
         if self._task:
@@ -53,7 +62,7 @@ class Transcriber:
                         continue
                     logger.debug(f"Transcribing segment {segment_id}: {ogg_path}")
                     t0 = time.time()
-                    transcript = await asyncio.to_thread(self._transcribe, ogg_path)
+                    transcript = await asyncio.to_thread(self.transcribe_file, ogg_path)
                     duration = time.time() - t0
                     result = transcript.strip() if transcript and transcript.strip() else "Blank"
                     await self.db.set_segment_transcript(segment_id, result)
@@ -67,7 +76,7 @@ class Transcriber:
         except asyncio.CancelledError:
             pass
 
-    def _transcribe(self, audio_path: str) -> str:
+    def transcribe_file(self, audio_path: str) -> str:
         model = self._load_model()
         segments, _ = model.transcribe(
             audio_path,

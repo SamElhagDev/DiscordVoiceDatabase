@@ -1,7 +1,11 @@
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ext.commands import Context
+
+logger = logging.getLogger("discord_bot")
 
 
 class Owner(commands.Cog, name="owner"):
@@ -78,9 +82,11 @@ class Owner(commands.Cog, name="owner"):
     async def load(self, context: Context, cog: str) -> None:
         try:
             await self.bot.load_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to load cog '{cog}': {e}", exc_info=True)
             embed = discord.Embed(
-                description=f"Could not load the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not load the `{cog}` cog: `{type(e).__name__}: {e}`",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
@@ -98,9 +104,11 @@ class Owner(commands.Cog, name="owner"):
     async def unload(self, context: Context, cog: str) -> None:
         try:
             await self.bot.unload_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to unload cog '{cog}': {e}", exc_info=True)
             embed = discord.Embed(
-                description=f"Could not unload the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not unload the `{cog}` cog: `{type(e).__name__}: {e}`",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
@@ -118,9 +126,11 @@ class Owner(commands.Cog, name="owner"):
     async def reload(self, context: Context, cog: str) -> None:
         try:
             await self.bot.reload_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to reload cog '{cog}': {e}", exc_info=True)
             embed = discord.Embed(
-                description=f"Could not reload the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not reload the `{cog}` cog: `{type(e).__name__}: {e}`",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
