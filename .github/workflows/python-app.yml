@@ -18,6 +18,8 @@ jobs:
       DiscordVoiceDatabase_APP_TASK: DiscordVoiceDatabase                  # Scheduled Task name
       DiscordVoiceDatabase_APP_PORT: 8080                                  # if your app uses PORT
       DiscordVoiceDatabase_TOKEN: ${{ secrets.DiscordVoiceDatabase_TOKEN }}
+      DiscordVoiceDatabase_ROLE_ID: ${{ secrets.DiscordVoiceDatabase_ROLE_ID }}
+      DiscordVoiceDatabase_VERSION: "1.0.0"
       DiscordVoiceDatabase_DB_PATH: C:\apps\DiscordVoiceDatabase\data\database.db
       DiscordVoiceDatabase_RECORDINGS_PATH: C:\apps\DiscordVoiceDatabase\recordings
       DiscordVoiceDatabase_CLIPS_PATH: C:\apps\DiscordVoiceDatabase\clips
@@ -204,13 +206,26 @@ jobs:
               $m = [Environment]::GetEnvironmentVariable('DiscordVoiceDatabase_INVITE_LINK','Machine')
               if (-not $m) { throw "Failed to set machine env var DiscordVoiceDatabase_INVITE_LINK." }
 
-      - name: Set recording paths as machine env vars
+      - name: Set DiscordVoiceDatabase_ROLE_ID as machine env var (optional)
+        shell: powershell
+        env:
+          DiscordVoiceDatabase_ROLE_ID: ${{ secrets.DiscordVoiceDatabase_ROLE_ID }}
+        run: |
+              if ($env:DiscordVoiceDatabase_ROLE_ID) {
+                setx DiscordVoiceDatabase_ROLE_ID "$env:DiscordVoiceDatabase_ROLE_ID" /M | Out-Null
+                Write-Host "DiscordVoiceDatabase_ROLE_ID set."
+              } else {
+                Write-Host "DiscordVoiceDatabase_ROLE_ID not configured — all members can use bot commands."
+              }
+
+      - name: Set recording paths and version as machine env vars
         shell: powershell
         run: |
               setx DiscordVoiceDatabase_DB_PATH "$env:DiscordVoiceDatabase_DB_PATH" /M | Out-Null
               setx DiscordVoiceDatabase_RECORDINGS_PATH "$env:DiscordVoiceDatabase_RECORDINGS_PATH" /M | Out-Null
               setx DiscordVoiceDatabase_CLIPS_PATH "$env:DiscordVoiceDatabase_CLIPS_PATH" /M | Out-Null
               setx DiscordVoiceDatabase_RETENTION_DAYS "$env:DiscordVoiceDatabase_RETENTION_DAYS" /M | Out-Null
+              setx DiscordVoiceDatabase_VERSION "$env:DiscordVoiceDatabase_VERSION" /M | Out-Null
 
     # Stop any existing bot so it doesn't keep running with old env
       - name: Stop existing bot (if running)

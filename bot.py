@@ -17,14 +17,21 @@ load_dotenv()
 
 # Configurable paths — override via .env or environment variables
 # Defaults work for both Windows direct-run and Docker
-DB_PATH = os.getenv("DiscordVoiceDatabase_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "database.db"))
-RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings"))
-CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips"))
+_BASE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.getenv("DiscordVoiceDatabase_DB_PATH", os.path.join(_BASE, "data", "database.db"))
+RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", os.path.join(_BASE, "recordings"))
+CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", os.path.join(_BASE, "clips"))
+LOGS_PATH = os.path.join(_BASE, "logs")
+
+VERSION = os.getenv("DiscordVoiceDatabase_VERSION", "1.0.0")
+_role_id_str = os.getenv("DiscordVoiceDatabase_ROLE_ID", "")
+REQUIRED_ROLE_ID: int | None = int(_role_id_str) if _role_id_str.strip() else None
 
 # Ensure directories exist
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(RECORDINGS_PATH, exist_ok=True)
 os.makedirs(CLIPS_PATH, exist_ok=True)
+os.makedirs(LOGS_PATH, exist_ok=True)
 
 
 # Only enable intents the bot actually uses — reduces gateway event volume.
@@ -91,7 +98,7 @@ console_handler.setFormatter(LoggingFormatter())
 
 # Single rotating file handler shared by all loggers — caps disk usage
 file_handler = logging.handlers.RotatingFileHandler(
-    filename="discord.log", encoding="utf-8", mode="a",
+    filename=os.path.join(LOGS_PATH, "DiscordVoiceDatabase.log"), encoding="utf-8", mode="a",
     maxBytes=10 * 1024 * 1024,  # 10 MB per file
     backupCount=5,              # keep 5 rotated files (50 MB total)
 )
@@ -124,6 +131,8 @@ class DiscordBot(commands.Bot):
         self.database = None
         self.bot_prefix = os.getenv("DiscordVoiceDatabase_PREFIX", "!")
         self.invite_link = os.getenv("DiscordVoiceDatabase_INVITE_LINK", "")
+        self.version = VERSION
+        self.required_role_id = REQUIRED_ROLE_ID
 
     async def _init_schema(self, connection: aiosqlite.Connection) -> None:
         """Initialize database schema on the live connection."""

@@ -94,10 +94,15 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         logger.info("VoiceDatabase cog unloaded")
 
     async def cog_check(self, ctx: Context) -> bool:
-        """All commands in this cog require a guild context."""
+        """All commands in this cog require a guild context and optionally a specific role."""
         if ctx.guild is None:
             await ctx.send("This command can only be used in a server.")
             return False
+        required_role_id = self.bot.required_role_id
+        if required_role_id is not None:
+            if not any(role.id == required_role_id for role in ctx.author.roles):
+                await ctx.send("You don't have the required role to use this bot.")
+                return False
         return True
 
     async def cog_command_error(self, ctx: Context, error: Exception) -> None:
