@@ -130,7 +130,7 @@ class General(commands.Cog, name="general"):
                 if lines:
                     embed.add_field(name="👑  Owner", value="\n".join(lines), inline=False)
 
-        embed.set_footer(text="💡  Slash commands support parameter hints and autocomplete.")
+        embed.set_footer(text=f"💡  Slash commands support parameter hints and autocomplete.  |  v{self.bot.version}")
         await context.send(embed=embed)
 
     @commands.hybrid_command(
