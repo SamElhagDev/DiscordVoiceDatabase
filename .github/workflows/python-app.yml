@@ -215,7 +215,7 @@ jobs:
                 setx DiscordVoiceDatabase_ROLE_ID "$env:DiscordVoiceDatabase_ROLE_ID" /M | Out-Null
                 Write-Host "DiscordVoiceDatabase_ROLE_ID set."
               } else {
-                Write-Host "DiscordVoiceDatabase_ROLE_ID not configured — all members can use bot commands."
+                Write-Host "DiscordVoiceDatabase_ROLE_ID not configured - all members can use bot commands."
               }
 
       - name: Set recording paths and version as machine env vars
