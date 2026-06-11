@@ -326,6 +326,83 @@ class DatabaseManager:
             )
             await self.connection.commit()
 
+    async def get_segment_by_id(self, segment_id: int) -> tuple | None:
+        """Return a single segment row by id, or None if it no longer exists.
+        Same tuple shape as get_segments_in_range."""
+        rows = await self.connection.execute(
+            """SELECT id, guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size, transcript
+               FROM segments WHERE id=?""",
+            (segment_id,),
+        )
+        async with rows as cursor:
+            return await cursor.fetchone()
+
+    # ── Favorites operations ────────────────────────────────────────────
+
+    async def add_favorite(
+        self, user_id: int, guild_id: int, segment_id: int,
+        target_user_id: int, offset_sec: int, duration_min: int, label: str,
+    ) -> bool:
+        """Save a favorite clip for a user. Returns True if newly added, False if duplicate."""
+        async with self._lock:
+            existing = await self.connection.execute(
+                """SELECT 1 FROM favorites
+                   WHERE user_id=? AND segment_id=? AND offset_sec=? AND duration_min=?""",
+                (user_id, segment_id, offset_sec, duration_min),
+            )
+            async with existing as cursor:
+                if await cursor.fetchone() is not None:
+                    return False
+            await self.connection.execute(
+                """INSERT INTO favorites
+                       (user_id, guild_id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, guild_id, segment_id, target_user_id, offset_sec, duration_min, label, time.time()),
+            )
+            await self.connection.commit()
+            logger.info(f"Favorite added: user={user_id} segment={segment_id} guild={guild_id}")
+            return True
+
+    async def get_favorites(self, user_id: int, guild_id: int) -> list:
+        """Return a user's favorites in a guild, newest first.
+        Rows: (id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
+        """
+        rows = await self.connection.execute(
+            """SELECT id, segment_id, target_user_id, offset_sec, duration_min, label, created_at
+               FROM favorites
+               WHERE user_id=? AND guild_id=?
+               ORDER BY created_at DESC""",
+            (user_id, guild_id),
+        )
+        async with rows as cursor:
+            return await cursor.fetchall()
+
+    async def get_favorite(self, user_id: int, favorite_id: int) -> tuple | None:
+        """Return a single favorite owned by user_id, or None.
+        Row: (id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
+        """
+        rows = await self.connection.execute(
+            """SELECT id, segment_id, target_user_id, offset_sec, duration_min, label, created_at
+               FROM favorites
+               WHERE id=? AND user_id=?""",
+            (favorite_id, user_id),
+        )
+        async with rows as cursor:
+            return await cursor.fetchone()
+
+    async def remove_favorite(self, user_id: int, favorite_id: int) -> bool:
+        """Delete one favorite the user owns. Returns True if a row was removed."""
+        async with self._lock:
+            cursor = await self.connection.execute(
+                "DELETE FROM favorites WHERE id=? AND user_id=?",
+                (favorite_id, user_id),
+            )
+            await self.connection.commit()
+            removed = cursor.rowcount > 0
+            if removed:
+                logger.info(f"Favorite removed: user={user_id} favorite={favorite_id}")
+            return removed
+
     async def get_untranscribed_segments(self, guild_id: int = None) -> list:
         """Return all completed segments that have no transcript yet."""
         if guild_id:

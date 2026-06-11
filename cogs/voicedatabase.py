@@ -797,6 +797,79 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         view.message = await context.send(embed=embed, view=view)
 
     @commands.hybrid_command(
+        name="searchclips",
+        description="Search recordings by transcript text and download a matching clip.",
+    )
+    @app_commands.describe(
+        user="The user to search recordings for",
+        date="Date or start date in Eastern time (YYYY-MM-DD, defaults to today)",
+        query="Text to search for in transcripts",
+        end_date="End date for range search (YYYY-MM-DD, optional)",
+    )
+    async def search_clips_download(
+        self,
+        context: Context,
+        user: discord.User,
+        date: str = None,
+        end_date: str = None,
+        *,
+        query: str = "",
+    ) -> None:
+        try:
+            start_ts, end_ts, date_label, query = self._parse_search_date_range(date, end_date, query)
+        except ValueError as e:
+            await context.send(embed=discord.Embed(description=str(e), color=0xED4245))
+            return
+
+        if not query:
+            await context.send(
+                embed=discord.Embed(description="Please provide a search query.", color=0xED4245)
+            )
+            return
+
+        segments = await self.bot.database.search_segments_by_transcript(
+            user_id=user.id, start_ts=start_ts, end_ts=end_ts, query=query, guild_id=context.guild.id,
+        )
+
+        logger.info(f"/searchclips: user={user.id} date={date_label} query=\"{query}\" — {len(segments)} result(s)")
+
+        if not segments:
+            await context.send(
+                embed=discord.Embed(
+                    description=f"No results for **\"{query}\"** in {user.mention}'s recordings on {date_label}.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+
+        view = _ClipSelectView(
+            cog=self, segments=segments, target_user=user,
+            invoker_id=context.author.id, date=f"{date_label} — \"{query}\"",
+            mode="download",
+        )
+        embed = view.build_embed()
+        view.message = await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
+        name="favorites",
+        description="Browse and download your saved favorite clips.",
+    )
+    async def favorites(self, context: Context) -> None:
+        favs = await self.bot.database.get_favorites(context.author.id, context.guild.id)
+        logger.info(f"/favorites: user={context.author.id} guild={context.guild.id} — {len(favs)} favorite(s)")
+        if not favs:
+            await context.send(
+                embed=discord.Embed(
+                    description="You have no favorites yet. Use the ⭐ button on any clip menu to save one.",
+                    color=0xFEE75C,
+                )
+            )
+            return
+        view = _FavoriteSelectView(cog=self, favorites=favs, invoker_id=context.author.id)
+        embed = view.build_embed()
+        view.message = await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
         name="playclip",
         description="Play a recorded clip in your current voice channel.",
     )
@@ -1486,6 +1559,91 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
             pass
 
 
+class _FavoriteModal(discord.ui.Modal, title="Add to Favorites"):
+    duration = discord.ui.TextInput(
+        label="Duration (minutes)",
+        placeholder="e.g. 5",
+        required=True,
+        max_length=3,
+    )
+    start_offset = discord.ui.TextInput(
+        label="Start offset from segment start (minutes)",
+        placeholder="0 = from beginning",
+        required=False,
+        default="0",
+        max_length=3,
+    )
+
+    def __init__(self, cog, owner_id, seg, target_user, default_duration):
+        super().__init__()
+        self.cog = cog
+        self.owner_id = owner_id
+        self.seg = seg
+        self.target_user = target_user
+        self.duration.default = default_duration
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            duration_minutes = int(self.duration.value)
+        except ValueError:
+            await interaction.response.send_message("Duration must be a number.", ephemeral=True)
+            return
+
+        try:
+            offset_minutes = int(self.start_offset.value or "0")
+        except ValueError:
+            await interaction.response.send_message("Offset must be a number.", ephemeral=True)
+            return
+
+        if duration_minutes < 1 or duration_minutes > 60:
+            await interaction.response.send_message("Duration must be between 1 and 60.", ephemeral=True)
+            return
+
+        start_dt = datetime.fromtimestamp(self.seg[4], tz=EASTERN)
+        time_str = start_dt.strftime("%Y-%m-%d %I:%M %p")
+        transcript = self.seg[8] if len(self.seg) > 8 and self.seg[8] and self.seg[8] != "Blank" else None
+        snippet = f" — {transcript[:60]}" if transcript else ""
+        label = f"{self.target_user.display_name} · {time_str}{snippet}"
+
+        added = await self.cog.bot.database.add_favorite(
+            user_id=self.owner_id,
+            guild_id=interaction.guild.id,
+            segment_id=self.seg[0],
+            target_user_id=self.target_user.id,
+            offset_sec=offset_minutes * 60,
+            duration_min=duration_minutes,
+            label=label,
+        )
+
+        if added:
+            logger.info(f"Favorite saved: user={self.owner_id} segment={self.seg[0]} ({duration_minutes}m, offset={offset_minutes}m)")
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    description=f"⭐ Saved to your favorites — **{self.target_user.display_name}** ({time_str}, {duration_minutes} min).",
+                    color=0xF1C40F,
+                ),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    description="This clip is already in your favorites.",
+                    color=0xFEE75C,
+                ),
+                ephemeral=True,
+            )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        logger.error(f"FavoriteModal error: {error}", exc_info=True)
+        try:
+            await interaction.response.send_message(
+                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+
+
 class _ClipSelectView(discord.ui.View):
     def __init__(self, cog, segments, target_user, invoker_id, date, mode="play"):
         super().__init__(timeout=120)
@@ -1495,6 +1653,7 @@ class _ClipSelectView(discord.ui.View):
         self.invoker_id = invoker_id
         self.date = date
         self.mode = mode  # "play", "download", or "text"
+        self.favorite_mode = False  # when True, selecting a segment saves it to favorites
         self.page = 0
         self.per_page = 10
         self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
@@ -1525,7 +1684,9 @@ class _ClipSelectView(discord.ui.View):
             options.append(discord.SelectOption(
                 label=label, description=desc, value=str(seg[0]),
             ))
-        if self.mode == "download":
+        if self.favorite_mode:
+            placeholder = "Pick a segment to favorite..."
+        elif self.mode == "download":
             placeholder = "Pick a segment to download..."
         elif self.mode == "text":
             placeholder = "Pick a segment to view transcript..."
@@ -1555,6 +1716,21 @@ class _ClipSelectView(discord.ui.View):
             last_btn.callback = self._last_page
             self.add_item(last_btn)
 
+        # ⭐ favorite toggle — lets the user save a clip without playing/downloading it.
+        # Auto-flows to its own row (the select fills row 0, pagination fills row 1).
+        if self.mode in ("play", "download"):
+            if self.favorite_mode:
+                fav_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary)
+            else:
+                fav_btn = discord.ui.Button(label="⭐ Favorite", style=discord.ButtonStyle.success)
+            fav_btn.callback = self._toggle_favorite
+            self.add_item(fav_btn)
+
+    async def _toggle_favorite(self, interaction: discord.Interaction):
+        self.favorite_mode = not self.favorite_mode
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
     def build_embed(self):
         title = f"Recordings for {self.target_user.display_name} on {self.date}"
         if self.total_pages > 1:
@@ -1572,7 +1748,9 @@ class _ClipSelectView(discord.ui.View):
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
             field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
             embed.add_field(name=field_name, value=field_value, inline=False)
-        if self.mode == "download":
+        if self.favorite_mode:
+            action = "save to your favorites"
+        elif self.mode == "download":
             action = "download"
         elif self.mode == "text":
             action = "view its transcript"
@@ -1628,7 +1806,22 @@ class _ClipSelectView(discord.ui.View):
             logger.warning(f"ClipSelectView: Segment not found for id={selected_id}")
             await interaction.response.send_message("Segment not found.", ephemeral=True)
             return
-        logger.debug(f"ClipSelectView: Selected segment id={selected_id} mode={self.mode}")
+        logger.debug(f"ClipSelectView: Selected segment id={selected_id} mode={self.mode} favorite={self.favorite_mode}")
+
+        if self.favorite_mode:
+            if seg[5] is not None:
+                default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))
+            else:
+                default_dur = "1"
+            modal = _FavoriteModal(
+                cog=self.cog,
+                owner_id=self.invoker_id,
+                seg=seg,
+                target_user=self.target_user,
+                default_duration=default_dur,
+            )
+            await interaction.response.send_modal(modal)
+            return
 
         if self.mode == "text":
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
@@ -1667,6 +1860,209 @@ class _ClipSelectView(discord.ui.View):
                 default_duration=default_dur,
             )
         await interaction.response.send_modal(modal)
+
+
+class _FavoriteSelectView(discord.ui.View):
+    """Browse a user's saved favorites: select to download, or toggle remove mode."""
+
+    def __init__(self, cog, favorites, invoker_id):
+        super().__init__(timeout=120)
+        self.cog = cog
+        # rows: (id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
+        self.favorites = favorites
+        self.invoker_id = invoker_id
+        self.remove_mode = False
+        self.page = 0
+        self.per_page = 10
+        self.total_pages = max(1, (len(favorites) + self.per_page - 1) // self.per_page)
+        self.message = None  # set by caller for on_timeout
+        self._rebuild_items()
+
+    def _page_favorites(self):
+        start = self.page * self.per_page
+        return self.favorites[start:start + self.per_page]
+
+    def _rebuild_items(self):
+        self.clear_items()
+        options = []
+        for fav in self._page_favorites():
+            fav_id, segment_id, _target, offset_sec, duration_min, label, _created = fav
+            disp = (label or f"Segment {segment_id}")[:100]
+            desc = f"{duration_min} min" + (f", +{offset_sec // 60}m offset" if offset_sec else "")
+            options.append(discord.SelectOption(label=disp, description=desc[:100], value=str(fav_id)))
+        placeholder = "Pick a favorite to remove..." if self.remove_mode else "Pick a favorite to download..."
+        select = discord.ui.Select(placeholder=placeholder, options=options)
+        select.callback = self.on_select
+        self.add_item(select)
+
+        if self.total_pages > 1:
+            first_btn = discord.ui.Button(label="⏮ First", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+            first_btn.callback = self._first_page
+            self.add_item(first_btn)
+
+            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            page_btn = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.primary, disabled=True)
+            self.add_item(page_btn)
+
+            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+            last_btn = discord.ui.Button(label="Last ⏭", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+            last_btn.callback = self._last_page
+            self.add_item(last_btn)
+
+        if self.remove_mode:
+            toggle = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary)
+        else:
+            toggle = discord.ui.Button(label="🗑 Remove", style=discord.ButtonStyle.danger)
+        toggle.callback = self._toggle_remove
+        self.add_item(toggle)
+
+    def build_embed(self):
+        title = "⭐ Your Favorites"
+        if self.total_pages > 1:
+            title += f" (Page {self.page + 1}/{self.total_pages})"
+        embed = discord.Embed(title=title, color=0xF1C40F)
+        for fav in self._page_favorites():
+            fav_id, segment_id, _target, offset_sec, duration_min, label, created_at = fav
+            created_dt = datetime.fromtimestamp(created_at, tz=EASTERN)
+            name = (label or f"Segment {segment_id}")[:256]
+            meta = f"{duration_min} min"
+            if offset_sec:
+                meta += f" · +{offset_sec // 60}m offset"
+            meta += f" · saved {created_dt.strftime('%Y-%m-%d')}"
+            embed.add_field(name=name, value=meta, inline=False)
+        action = "remove it" if self.remove_mode else "download it"
+        embed.set_footer(text=f"{len(self.favorites)} favorite(s) • Select one below to {action}")
+        return embed
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            if self.message:
+                embed = self.build_embed()
+                embed.set_footer(text="This menu has timed out. Run the command again to browse.")
+                await self.message.edit(embed=embed, view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    async def _first_page(self, interaction: discord.Interaction):
+        self.page = 0
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _prev_page(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _last_page(self, interaction: discord.Interaction):
+        self.page = self.total_pages - 1
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _toggle_remove(self, interaction: discord.Interaction):
+        self.remove_mode = not self.remove_mode
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can use this menu.", ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        fav_id = int(interaction.data["values"][0])
+        fav = next((f for f in self.favorites if f[0] == fav_id), None)
+        if fav is None:
+            await interaction.response.send_message("Favorite not found.", ephemeral=True)
+            return
+        _, segment_id, target_user_id, offset_sec, duration_min, label, _created = fav
+
+        if self.remove_mode:
+            await self.cog.bot.database.remove_favorite(self.invoker_id, fav_id)
+            self.favorites = [f for f in self.favorites if f[0] != fav_id]
+            self.total_pages = max(1, (len(self.favorites) + self.per_page - 1) // self.per_page)
+            self.page = min(self.page, self.total_pages - 1)
+            if not self.favorites:
+                for item in self.children:
+                    item.disabled = True
+                await interaction.response.edit_message(
+                    embed=discord.Embed(description="All favorites removed.", color=0xFEE75C),
+                    view=self,
+                )
+                return
+            self._rebuild_items()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+            return
+
+        # Download mode — re-derive the exact clip from the anchor segment.
+        seg = await self.cog.bot.database.get_segment_by_id(segment_id)
+        if seg is None:
+            await interaction.response.send_message(
+                "That clip's audio is no longer available (it may have been cleaned up). "
+                "Use 🗑 Remove to delete this favorite.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        start_time = datetime.fromtimestamp(seg[4], tz=EASTERN)
+        clip_path = await self.cog.retriever.retrieve_clip(
+            user_id=target_user_id,
+            start_time=start_time,
+            duration_minutes=duration_min,
+            guild_id=interaction.guild.id,
+            anchor_seg=seg,
+            offset_sec=offset_sec,
+        )
+
+        if clip_path is None:
+            logger.warning(f"Favorites: no audio for favorite {fav_id} segment={segment_id}")
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description="No audio found for that favorite. The file may have been cleaned up.",
+                    color=0xFEE75C,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        file_size = os.path.getsize(clip_path)
+        if file_size > 25 * 1024 * 1024:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB).",
+                    color=0xED4245,
+                ),
+                ephemeral=True,
+            )
+            self.cog._cleanup_file(clip_path)
+            return
+
+        logger.info(f"Favorites: sending favorite {fav_id} ({duration_min} min, {file_size} bytes)")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="⭐ Favorite Clip",
+                description=label or f"Segment {segment_id}",
+                color=0xF1C40F,
+            ),
+            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
+        )
+        self.cog._cleanup_file(clip_path)
 
 
 async def setup(bot) -> None:

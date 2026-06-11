@@ -41,3 +41,18 @@ CREATE TABLE IF NOT EXISTS `perf_logs` (
 CREATE INDEX IF NOT EXISTS idx_perf_logs_method_time ON perf_logs(method, logged_at);
 CREATE INDEX IF NOT EXISTS idx_perf_logs_segment ON perf_logs(segment_id);
 
+CREATE TABLE IF NOT EXISTS `favorites` (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,          -- Discord ID of the favorite's owner
+    guild_id INTEGER NOT NULL,
+    segment_id INTEGER NOT NULL,       -- anchor segment (segments.id)
+    target_user_id INTEGER NOT NULL,   -- whose audio the clip is of
+    offset_sec INTEGER NOT NULL DEFAULT 0,
+    duration_min INTEGER NOT NULL DEFAULT 1,
+    label TEXT,                        -- cached display string
+    created_at REAL NOT NULL,
+    UNIQUE(user_id, segment_id, offset_sec, duration_min)
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, guild_id, created_at);
+
