@@ -22,7 +22,8 @@ _ICONS = {
     "search":          "🔍",
     "searchtext":      "🔎",
     "searchclips":     "📥",
-    "favorites":       "⭐",
+    "favoritesclip":   "⭐",
+    "favoriteslist":   "⭐",
     "stop":            "🛑",
     "transcribe":      "📝",
     "perfstats":       "⚡",
@@ -52,7 +53,8 @@ _DESCS = {
     "search":          "Search transcripts & play a match",
     "searchtext":      "Search transcripts & view text",
     "searchclips":     "Search transcripts & download a clip",
-    "favorites":       "Browse your saved clips",
+    "favoritesclip":   "Download a saved favorite",
+    "favoriteslist":   "Play a saved favorite in voice",
     "stop":            "Stop current playback",
     "transcribe":      "Backfill missing transcripts",
     "perfstats":       "Pipeline processing time stats",
@@ -76,7 +78,7 @@ _DESCS = {
 _VDB_SECTIONS = [
     ("👥  Participation", ["join", "leave", "participants"],           True),
     ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"], True),
-    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "searchclips", "searchtext", "favorites", "stop"], False),
+    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "searchclips", "searchtext", "favoritesclip", "favoriteslist", "stop"], False),
     ("⚙️  Settings",      ["setchannel", "retention"],                 True),
     ("📝  Transcription", ["transcribe", "perfstats"],                 True),
 ]

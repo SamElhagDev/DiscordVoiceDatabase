@@ -850,13 +850,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         embed = view.build_embed()
         view.message = await context.send(embed=embed, view=view)
 
-    @commands.hybrid_command(
-        name="favorites",
-        description="Browse and download your saved favorite clips.",
-    )
-    async def favorites(self, context: Context) -> None:
+    async def _open_favorites(self, context: Context, mode: str) -> None:
         favs = await self.bot.database.get_favorites(context.author.id, context.guild.id)
-        logger.info(f"/favorites: user={context.author.id} guild={context.guild.id} — {len(favs)} favorite(s)")
+        logger.info(f"/favorites[{mode}]: user={context.author.id} guild={context.guild.id} — {len(favs)} favorite(s)")
         if not favs:
             await context.send(
                 embed=discord.Embed(
@@ -865,9 +861,23 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 )
             )
             return
-        view = _FavoriteSelectView(cog=self, favorites=favs, invoker_id=context.author.id)
+        view = _FavoriteSelectView(cog=self, favorites=favs, invoker_id=context.author.id, mode=mode)
         embed = view.build_embed()
         view.message = await context.send(embed=embed, view=view)
+
+    @commands.hybrid_command(
+        name="favoritesclip",
+        description="Browse your saved favorites and download one as a file.",
+    )
+    async def favorites_clip(self, context: Context) -> None:
+        await self._open_favorites(context, mode="download")
+
+    @commands.hybrid_command(
+        name="favoriteslist",
+        description="Browse your saved favorites and play one in voice chat.",
+    )
+    async def favorites_list(self, context: Context) -> None:
+        await self._open_favorites(context, mode="play")
 
     @commands.hybrid_command(
         name="playclip",
@@ -1865,12 +1875,13 @@ class _ClipSelectView(discord.ui.View):
 class _FavoriteSelectView(discord.ui.View):
     """Browse a user's saved favorites: select to download, or toggle remove mode."""
 
-    def __init__(self, cog, favorites, invoker_id):
+    def __init__(self, cog, favorites, invoker_id, mode="download"):
         super().__init__(timeout=120)
         self.cog = cog
         # rows: (id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
         self.favorites = favorites
         self.invoker_id = invoker_id
+        self.mode = mode  # "download" or "play"
         self.remove_mode = False
         self.page = 0
         self.per_page = 10
@@ -1890,7 +1901,12 @@ class _FavoriteSelectView(discord.ui.View):
             disp = (label or f"Segment {segment_id}")[:100]
             desc = f"{duration_min} min" + (f", +{offset_sec // 60}m offset" if offset_sec else "")
             options.append(discord.SelectOption(label=disp, description=desc[:100], value=str(fav_id)))
-        placeholder = "Pick a favorite to remove..." if self.remove_mode else "Pick a favorite to download..."
+        if self.remove_mode:
+            placeholder = "Pick a favorite to remove..."
+        elif self.mode == "play":
+            placeholder = "Pick a favorite to play..."
+        else:
+            placeholder = "Pick a favorite to download..."
         select = discord.ui.Select(placeholder=placeholder, options=options)
         select.callback = self.on_select
         self.add_item(select)
@@ -1936,7 +1952,12 @@ class _FavoriteSelectView(discord.ui.View):
                 meta += f" · +{offset_sec // 60}m offset"
             meta += f" · saved {created_dt.strftime('%Y-%m-%d')}"
             embed.add_field(name=name, value=meta, inline=False)
-        action = "remove it" if self.remove_mode else "download it"
+        if self.remove_mode:
+            action = "remove it"
+        elif self.mode == "play":
+            action = "play it in voice"
+        else:
+            action = "download it"
         embed.set_footer(text=f"{len(self.favorites)} favorite(s) • Select one below to {action}")
         return embed
 
@@ -2009,7 +2030,7 @@ class _FavoriteSelectView(discord.ui.View):
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
             return
 
-        # Download mode — re-derive the exact clip from the anchor segment.
+        # Re-derive the exact clip from the anchor segment (shared by play + download).
         seg = await self.cog.bot.database.get_segment_by_id(segment_id)
         if seg is None:
             await interaction.response.send_message(
@@ -2019,9 +2040,14 @@ class _FavoriteSelectView(discord.ui.View):
             )
             return
 
-        await interaction.response.defer()
+        if self.mode == "play":
+            await self._play_favorite(interaction, seg, fav_id, target_user_id, offset_sec, duration_min, label)
+        else:
+            await self._download_favorite(interaction, seg, fav_id, target_user_id, offset_sec, duration_min, label)
+
+    async def _retrieve(self, interaction, seg, target_user_id, offset_sec, duration_min):
         start_time = datetime.fromtimestamp(seg[4], tz=EASTERN)
-        clip_path = await self.cog.retriever.retrieve_clip(
+        return await self.cog.retriever.retrieve_clip(
             user_id=target_user_id,
             start_time=start_time,
             duration_minutes=duration_min,
@@ -2030,8 +2056,12 @@ class _FavoriteSelectView(discord.ui.View):
             offset_sec=offset_sec,
         )
 
+    async def _download_favorite(self, interaction, seg, fav_id, target_user_id, offset_sec, duration_min, label):
+        disp = label or f"Segment {seg[0]}"
+        await interaction.response.defer()
+        clip_path = await self._retrieve(interaction, seg, target_user_id, offset_sec, duration_min)
         if clip_path is None:
-            logger.warning(f"Favorites: no audio for favorite {fav_id} segment={segment_id}")
+            logger.warning(f"Favorites: no audio for favorite {fav_id} segment={seg[0]}")
             await interaction.followup.send(
                 embed=discord.Embed(
                     description="No audio found for that favorite. The file may have been cleaned up.",
@@ -2057,12 +2087,56 @@ class _FavoriteSelectView(discord.ui.View):
         await interaction.followup.send(
             embed=discord.Embed(
                 title="⭐ Favorite Clip",
-                description=label or f"Segment {segment_id}",
+                description=disp,
                 color=0xF1C40F,
             ),
             file=discord.File(clip_path, filename=os.path.basename(clip_path)),
         )
         self.cog._cleanup_file(clip_path)
+
+    async def _play_favorite(self, interaction, seg, fav_id, target_user_id, offset_sec, duration_min, label):
+        disp = label or f"Segment {seg[0]}"
+        guild = interaction.guild
+        member = guild.get_member(interaction.user.id)
+        voice_channel = None
+        if member and member.voice and member.voice.channel:
+            voice_channel = member.voice.channel
+        elif guild.id in self.cog.recorders:
+            voice_channel = self.cog.recorders[guild.id].channel
+        if voice_channel is None:
+            await interaction.response.send_message(
+                embed=discord.Embed(description="Join a voice channel first.", color=0xED4245),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        clip_path = await self._retrieve(interaction, seg, target_user_id, offset_sec, duration_min)
+        if clip_path is None:
+            logger.warning(f"Favorites: no audio for favorite {fav_id} segment={seg[0]}")
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description="No audio found for that favorite. The file may have been cleaned up.",
+                    color=0xFEE75C,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        logger.info(f"Favorites: playing favorite {fav_id} ({duration_min} min) in #{voice_channel.name}")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                description=f"Playing ⭐ **{disp}** ({duration_min} min).",
+                color=0x57F287,
+            )
+        )
+        # _play_audio_in_voice handles VC connect/reuse, chimes, and clip cleanup.
+        error = await self.cog._play_audio_in_voice(guild, voice_channel, clip_path)
+        if error:
+            await interaction.followup.send(
+                embed=discord.Embed(description=error, color=0xED4245),
+                ephemeral=True,
+            )
 
 
 async def setup(bot) -> None:
