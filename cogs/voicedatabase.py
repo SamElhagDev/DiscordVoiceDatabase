@@ -66,6 +66,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.retriever = None
         self.cleanup = None
         self.transcriber = None
+        # Tracks guilds where a soft reconnect was already attempted this cycle.
+        # If still stale on the next health check the hard reconnect path is used.
+        self._soft_reconnect_tried: set[int] = set()
 
     async def cog_load(self):
         """Called when the cog is loaded. Start cleanup task."""
@@ -461,11 +464,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.recorders[context.guild.id] = recorder
         logger.info(f"/record: Recording active in #{channel.name} (segment_dur={settings['segment_duration_sec']}s)")
 
-        # Play start chime — briefly pauses the sink so send/recv don't conflict.
-        recorder.pause_listening()
-        await _play_chime(vc, CHIME_START)
-        recorder.resume_listening()
-
         await context.send(
             embed=discord.Embed(
                 description=f"Recording started in **{channel.name}**.",
@@ -492,9 +490,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
         vc = context.guild.voice_client
         await recorder.stop()
-
-        # Play end chime — recorder's sink is already detached; VC still connected.
-        await _play_chime(vc, CHIME_END)
 
         # Disconnect from voice
         if context.guild.voice_client:
@@ -1109,18 +1104,45 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     async def _check_voice_health(self, guild: discord.Guild, recorder: VoiceRecorder):
         stale = recorder.seconds_since_last_packet
         if stale < self.AUDIO_STALE_THRESHOLD:
+            # Packets are flowing again — clear any pending soft-reconnect flag.
+            self._soft_reconnect_tried.discard(guild.id)
             return
 
         members_in_channel = [m for m in recorder.channel.members if not m.bot]
         if len(members_in_channel) < 1:
             return
 
+        channel = recorder.channel
+        vc = guild.voice_client
+
+        # ── Soft reconnect (first attempt) ──────────────────────────────
+        if guild.id not in self._soft_reconnect_tried and vc and vc.is_connected():
+            logger.warning(
+                f"Voice audio stale for {stale:.0f}s in {guild.name} / "
+                f"#{channel.name} — soft reconnect"
+            )
+            self._soft_reconnect_tried.add(guild.id)
+            try:
+                recorder.pause_listening()
+                await vc.move_to(channel)
+                await asyncio.sleep(3)   # allow new voice session to establish
+                recorder.resume_listening()
+                logger.info(f"Soft voice reconnect completed in {guild.name} / #{channel.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Soft reconnect failed in {guild.name}: {e} — "
+                    f"will hard reconnect on next health check"
+                )
+            return
+
+        # ── Hard reconnect (soft failed or vc already gone) ─────────────
+        # Fully stops the recorder, disconnects, and rejoins the channel.
+        self._soft_reconnect_tried.discard(guild.id)
         logger.warning(
             f"Voice audio stale for {stale:.0f}s in {guild.name} / "
-            f"#{recorder.channel.name} — reconnecting"
+            f"#{channel.name} — hard reconnect"
         )
 
-        channel = recorder.channel
         settings = await self.bot.database.get_settings(guild.id)
 
         old_recorder = self.recorders.pop(guild.id, None)
@@ -1136,7 +1158,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         try:
             vc = await self._connect_voice(channel)
             if vc is None:
-                logger.error(f"Voice health reconnect failed for {guild.name}")
+                logger.error(f"Voice health hard reconnect failed for {guild.name}")
                 return
             new_recorder = VoiceRecorder(
                 bot=self.bot,
@@ -1150,13 +1172,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             await new_recorder.start(vc)
             self.recorders[guild.id] = new_recorder
             logger.info(
-                f"Voice health reconnect successful in {guild.name} / #{channel.name}"
+                f"Voice health hard reconnect successful in {guild.name} / #{channel.name}"
             )
-            new_recorder.pause_listening()
-            await _play_chime(vc, CHIME_START)
-            new_recorder.resume_listening()
         except Exception as e:
-            logger.error(f"Voice health reconnect failed for {guild.name}: {e}")
+            logger.error(f"Voice health hard reconnect failed for {guild.name}: {e}")
 
     async def _try_auto_join(self, guild: discord.Guild):
         settings = await self.bot.database.get_settings(guild.id)
@@ -1199,9 +1218,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             logger.info(
                 f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
             )
-            recorder.pause_listening()
-            await _play_chime(vc, CHIME_START)
-            recorder.resume_listening()
         except Exception as e:
             logger.error(f"Auto-join failed for {guild.name}: {e}")
 
@@ -1246,8 +1262,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             recorder = self.recorders.pop(guild_id, None)
             if recorder:
                 await recorder.stop()
-            # Play end chime while still connected, then leave.
-            await _play_chime(vc, CHIME_END)
             if member.guild.voice_client:
                 await member.guild.voice_client.disconnect(force=True)
             logger.info(
