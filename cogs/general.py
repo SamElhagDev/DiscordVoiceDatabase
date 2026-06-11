@@ -68,26 +68,32 @@ _DESCS = {
     "shutdown":        "Shut down the bot",
 }
 
-# Voice database sections — order matters for Discord's inline column layout.
-# (title, [command names], inline)
-# Layout produced:
-#   Row 1 │ 👥 Participation  │ ⏺️ Recording          │
-#   Row 2 │ 🎵 Playback (full width)                   │
-#   Row 3 │ ⚙️ Settings       │ 📝 Transcription │ 🔧 General │
-#   Row 4 │ 👑 Owner (full width, owner-only)           │
+# Voice database sections — each rendered as its own full-width field for readability.
+# (title, [command names])
 _VDB_SECTIONS = [
-    ("👥  Participation", ["join", "leave", "participants"],           True),
-    ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"], True),
-    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "search", "searchclips", "searchtext", "favoritesclip", "favoriteslist", "stop"], False),
-    ("⚙️  Settings",      ["setchannel", "retention"],                 True),
-    ("📝  Transcription", ["transcribe", "perfstats"],                 True),
+    ("👥  Participation", ["join", "leave", "participants"]),
+    ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"]),
+    ("🎵  Playback",      ["listclips", "listtext", "playclip", "clip", "stop"]),
+    ("🔍  Search",        ["search", "searchclips", "searchtext"]),
+    ("⭐  Favorites",     ["favoritesclip", "favoriteslist"]),
+    ("⚙️  Settings",      ["setchannel", "retention"]),
+    ("📝  Transcription", ["transcribe", "perfstats"]),
 ]
 
 
 def _fmt_line(prefix: str, name: str, cmd) -> str:
+    """One command block: usage line (with parameters) then its description below."""
     icon = _ICONS.get(name, "•")
     desc = _DESCS.get(name, cmd.description.partition("\n")[0])
-    return f"{icon} `{prefix}{name}` — {desc}"
+    sig = cmd.signature  # e.g. "<user> [date] [end_date]" — <> required, [] optional
+    usage = f"{prefix}{name}" + (f" {sig}" if sig else "")
+    return f"{icon}  `{usage}`\n*{desc}*"
+
+
+def _fmt_section(prefix: str, names: list, cmds: dict) -> str:
+    """Join each command's block with a blank line so the field has room to breathe."""
+    blocks = [_fmt_line(prefix, n, cmds[n]) for n in names if n in cmds]
+    return "\n\n".join(blocks)
 
 
 class General(commands.Cog, name="general"):
@@ -102,41 +108,40 @@ class General(commands.Cog, name="general"):
 
         embed = discord.Embed(
             title="📖  Voice Database — Commands",
-            description=f"Use `{prefix}command` or `/command` — all commands support both.",
+            description=(
+                f"Every command works with the **`{prefix}`** prefix or as a **`/`** slash command.\n"
+                "In each usage line:  `<>` = required  ·  `[]` = optional"
+            ),
             color=0x5865F2,
         )
 
-        # ── Voice Database sections (explicit order) ────────────────────
+        # ── Voice Database sections (each its own full-width field) ──────
         vdb = self.bot.get_cog("voicedatabase")
         if vdb:
             vdb_cmds = {cmd.name: cmd for cmd in vdb.get_commands()}
-            for title, names, inline in _VDB_SECTIONS:
-                lines = [
-                    _fmt_line(prefix, n, vdb_cmds[n])
-                    for n in names
-                    if n in vdb_cmds
-                ]
-                if lines:
-                    embed.add_field(name=title, value="\n".join(lines), inline=inline)
+            for title, names in _VDB_SECTIONS:
+                value = _fmt_section(prefix, names, vdb_cmds)
+                if value:
+                    embed.add_field(name=title, value=value, inline=False)
 
-        # ── General (inline=True → sits in 3rd column of the Settings row) ──
+        # ── General ─────────────────────────────────────────────────────
         gen = self.bot.get_cog("general")
         if gen:
             gen_cmds = {cmd.name: cmd for cmd in gen.get_commands()}
-            lines = [_fmt_line(prefix, n, c) for n, c in gen_cmds.items()]
-            if lines:
-                embed.add_field(name="🔧  General", value="\n".join(lines), inline=True)
+            value = _fmt_section(prefix, list(gen_cmds.keys()), gen_cmds)
+            if value:
+                embed.add_field(name="🔧  General", value=value, inline=False)
 
-        # ── Owner (full-width, only shown to the bot owner) ─────────────
+        # ── Owner (only shown to the bot owner) ─────────────────────────
         if await self.bot.is_owner(context.author):
             owner = self.bot.get_cog("owner")
             if owner:
                 owner_cmds = {cmd.name: cmd for cmd in owner.get_commands()}
-                lines = [_fmt_line(prefix, n, c) for n, c in owner_cmds.items()]
-                if lines:
-                    embed.add_field(name="👑  Owner", value="\n".join(lines), inline=False)
+                value = _fmt_section(prefix, list(owner_cmds.keys()), owner_cmds)
+                if value:
+                    embed.add_field(name="👑  Owner", value=value, inline=False)
 
-        embed.set_footer(text=f"💡  Slash commands support parameter hints and autocomplete.  |  v{self.bot.version}")
+        embed.set_footer(text=f"💡  Slash commands also offer inline parameter hints & autocomplete.  ·  v{self.bot.version}")
         await context.send(embed=embed)
 
     @commands.hybrid_command(
