@@ -1659,6 +1659,9 @@ class _ClipSelectView(discord.ui.View):
         super().__init__(timeout=120)
         self.cog = cog
         self.segments = segments
+        # When results span more than one calendar day (Eastern), show the date
+        # alongside each time so users can tell which day a segment is from.
+        self.multi_day = len({datetime.fromtimestamp(s[4], tz=EASTERN).date() for s in segments}) > 1
         self.target_user = target_user
         self.invoker_id = invoker_id
         self.date = date
@@ -1674,12 +1677,18 @@ class _ClipSelectView(discord.ui.View):
         start = self.page * self.per_page
         return self.segments[start:start + self.per_page]
 
+    def _fmt_start(self, start_dt) -> str:
+        """Start-time label — prefixes the date when results span multiple days."""
+        if self.multi_day:
+            return start_dt.strftime("%b %d, %I:%M:%S %p")
+        return start_dt.strftime("%I:%M:%S %p")
+
     def _rebuild_items(self):
         self.clear_items()
         options = []
         for seg in self._page_segments():
             start_dt = datetime.fromtimestamp(seg[4], tz=EASTERN)
-            label = start_dt.strftime("%I:%M:%S %p")
+            label = self._fmt_start(start_dt)
             if seg[5] is not None:
                 end_dt = datetime.fromtimestamp(seg[5], tz=EASTERN)
                 dur = int(seg[5] - seg[4])
@@ -1752,9 +1761,9 @@ class _ClipSelectView(discord.ui.View):
                 end_dt = datetime.fromtimestamp(seg[5], tz=EASTERN)
                 duration_sec = int(seg[5] - seg[4])
                 duration_str = f"{duration_sec // 60}m {duration_sec % 60}s"
-                field_name = f"{start_dt.strftime('%I:%M:%S %p')} → {end_dt.strftime('%I:%M:%S %p')}  ({duration_str})"
+                field_name = f"{self._fmt_start(start_dt)} → {end_dt.strftime('%I:%M:%S %p')}  ({duration_str})"
             else:
-                field_name = f"{start_dt.strftime('%I:%M:%S %p')} → ongoing"
+                field_name = f"{self._fmt_start(start_dt)} → ongoing"
             transcript = seg[8] if len(seg) > 8 and seg[8] else None
             field_value = f"*{transcript[:200]}{'...' if len(transcript) > 200 else ''}*" if transcript else "*No transcript yet*"
             embed.add_field(name=field_name, value=field_value, inline=False)
