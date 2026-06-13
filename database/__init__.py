@@ -88,26 +88,21 @@ class DatabaseManager:
 
     # ── Segment operations ──────────────────────────────────────────────
 
-    async def add_segment(
-        self, guild_id: int, channel_id: int, user_id: int, start_ts: float, file_path: str
+    async def add_completed_segment(
+        self, guild_id: int, channel_id: int, user_id: int,
+        start_ts: float, end_ts: float, file_path: str, file_size: int = 0,
     ) -> int:
+        """Insert a fully-recorded segment in a single write — start, end, and
+        size are all known by the time a segment is rotated to disk."""
         async with self._lock:
             cursor = await self.connection.execute(
-                "INSERT INTO segments(guild_id, channel_id, user_id, start_ts, file_path) VALUES (?, ?, ?, ?, ?)",
-                (guild_id, channel_id, user_id, start_ts, file_path),
+                "INSERT INTO segments(guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, channel_id, user_id, start_ts, end_ts, file_path, file_size),
             )
             await self.connection.commit()
             logger.debug(f"Segment added: id={cursor.lastrowid} user={user_id} file={file_path}")
             return cursor.lastrowid
-
-    async def close_segment(self, segment_id: int, end_ts: float, file_size: int = 0):
-        async with self._lock:
-            await self.connection.execute(
-                "UPDATE segments SET end_ts=?, file_size=? WHERE id=?",
-                (end_ts, file_size, segment_id),
-            )
-            await self.connection.commit()
-            logger.debug(f"Segment closed: id={segment_id} size={file_size}")
 
     async def update_segment_file_size(self, segment_id: int, file_size: int):
         async with self._lock:
@@ -402,6 +397,20 @@ class DatabaseManager:
             if removed:
                 logger.info(f"Favorite removed: user={user_id} favorite={favorite_id}")
             return removed
+
+    async def delete_favorites_by_segment_ids(self, segment_ids: list):
+        """Drop favorites that reference purged segments so they don't accumulate."""
+        if not segment_ids:
+            return
+        async with self._lock:
+            placeholders = ",".join("?" for _ in segment_ids)
+            cursor = await self.connection.execute(
+                f"DELETE FROM favorites WHERE segment_id IN ({placeholders})",
+                segment_ids,
+            )
+            await self.connection.commit()
+            if cursor.rowcount:
+                logger.info(f"Cleanup: removed {cursor.rowcount} favorite(s) for purged segments")
 
     async def get_untranscribed_segments(self, guild_id: int = None) -> list:
         """Return all completed segments that have no transcript yet."""

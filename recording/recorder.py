@@ -595,14 +595,15 @@ class VoiceRecorder:
         end_ts = time.time()
         file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
 
-        segment_id = await self.db.add_segment(
+        segment_id = await self.db.add_completed_segment(
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
             start_ts=start_ts,
+            end_ts=end_ts,
             file_path=ogg_path,
+            file_size=file_size,
         )
-        await self.db.close_segment(segment_id, end_ts, file_size)
 
         rotate_dur = time.time() - rotate_start
         audio_dur = end_ts - start_ts

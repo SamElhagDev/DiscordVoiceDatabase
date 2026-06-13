@@ -28,6 +28,9 @@ RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", "recordings"
 CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", "clips")
 RETENTION_DAYS = int(os.getenv("DiscordVoiceDatabase_RETENTION_DAYS", "7"))
 
+# Maximum clip size we'll upload as a Discord attachment.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 # Chime WAV files — played on recording start/stop and clip playback boundaries.
 # Paths are resolved relative to the project root (one level above this cog).
 _BOT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +72,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         # Tracks guilds where a soft reconnect was already attempted this cycle.
         # If still stale on the next health check the hard reconnect path is used.
         self._soft_reconnect_tried: set[int] = set()
+        # Per-guild lock serializing recorder create/destroy so the auto-rejoin
+        # loop, voice-state listener, and commands can't race on self.recorders.
+        self._guild_locks: dict[int, asyncio.Lock] = {}
+
+    def _guild_lock(self, guild_id: int) -> asyncio.Lock:
+        lock = self._guild_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._guild_locks[guild_id] = lock
+        return lock
 
     async def cog_load(self):
         """Called when the cog is loaded. Start cleanup task."""
@@ -137,7 +150,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                     continue
                 logger.info(f"Voice connected to #{channel.name} (attempt {attempt + 1})")
                 return vc
-            except (discord.ClientException, discord.errors.ConnectionClosed) as e:
+            except (discord.ClientException, discord.errors.ConnectionClosed, asyncio.TimeoutError) as e:
                 logger.warning(f"Voice connect failed (attempt {attempt + 1}): {e}")
                 if attempt < 2:
                     await asyncio.sleep(3)
@@ -319,6 +332,26 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         except OSError:
             pass
 
+    async def _deliver_clip_file(self, interaction: discord.Interaction, clip_path: str, embed: discord.Embed) -> None:
+        """Upload a generated clip as a file attachment, enforcing the size cap.
+        Always deletes clip_path when done. Assumes clip_path exists."""
+        file_size = os.path.getsize(clip_path)
+        if file_size > MAX_UPLOAD_BYTES:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB). Try a shorter duration.",
+                    color=0xED4245,
+                ),
+                ephemeral=True,
+            )
+            self._cleanup_file(clip_path)
+            return
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
+        )
+        self._cleanup_file(clip_path)
+
     # ── Participation commands ──────────────────────────────────────────
 
     @commands.hybrid_command(
@@ -412,57 +445,57 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def start_recording(self, context: Context) -> None:
-        if context.guild.id in self.recorders:
-            await context.send(
-                embed=discord.Embed(
-                    description="Already recording in this server.",
-                    color=0xFEE75C,
+        async with self._guild_lock(context.guild.id):
+            if context.guild.id in self.recorders:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Already recording in this server.",
+                        color=0xFEE75C,
+                    )
                 )
-            )
-            return
+                return
 
-        # Determine which channel to join
-        channel = None
-        if context.author.voice and context.author.voice.channel:
-            channel = context.author.voice.channel
-        else:
             settings = await self.bot.database.get_settings(context.guild.id)
-            if settings["primary_channel_id"]:
+
+            # Determine which channel to join
+            channel = None
+            if context.author.voice and context.author.voice.channel:
+                channel = context.author.voice.channel
+            elif settings["primary_channel_id"]:
                 channel = context.guild.get_channel(settings["primary_channel_id"])
 
-        if channel is None:
-            await context.send(
-                embed=discord.Embed(
-                    description="Join a voice channel first, or set a primary channel with `!setchannel`.",
-                    color=0xED4245,
+            if channel is None:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Join a voice channel first, or set a primary channel with `!setchannel`.",
+                        color=0xED4245,
+                    )
                 )
-            )
-            return
+                return
 
-        logger.info(f"/record: {context.author} starting recording in #{channel.name} (guild {context.guild.id})")
-        vc = await self._connect_voice(channel)
-        if vc is None:
-            await context.send(
-                embed=discord.Embed(
-                    description="Failed to connect to the voice channel. Try again in a moment.",
-                    color=0xED4245,
+            logger.info(f"/record: {context.author} starting recording in #{channel.name} (guild {context.guild.id})")
+            vc = await self._connect_voice(channel)
+            if vc is None:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Failed to connect to the voice channel. Try again in a moment.",
+                        color=0xED4245,
+                    )
                 )
-            )
-            return
+                return
 
-        settings = await self.bot.database.get_settings(context.guild.id)
-        recorder = VoiceRecorder(
-            bot=self.bot,
-            guild=context.guild,
-            channel=channel,
-            database=self.bot.database,
-            recordings_path=RECORDINGS_PATH,
-            segment_duration_sec=settings["segment_duration_sec"],
-            transcriber=self.transcriber,
-        )
-        await recorder.start(vc)
-        self.recorders[context.guild.id] = recorder
-        logger.info(f"/record: Recording active in #{channel.name} (segment_dur={settings['segment_duration_sec']}s)")
+            recorder = VoiceRecorder(
+                bot=self.bot,
+                guild=context.guild,
+                channel=channel,
+                database=self.bot.database,
+                recordings_path=RECORDINGS_PATH,
+                segment_duration_sec=settings["segment_duration_sec"],
+                transcriber=self.transcriber,
+            )
+            await recorder.start(vc)
+            self.recorders[context.guild.id] = recorder
+            logger.info(f"/record: Recording active in #{channel.name} (segment_dur={settings['segment_duration_sec']}s)")
 
         await context.send(
             embed=discord.Embed(
@@ -477,23 +510,23 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
     )
     @commands.has_permissions(manage_guild=True)
     async def stop_recording(self, context: Context) -> None:
-        recorder = self.recorders.pop(context.guild.id, None)
-        if recorder is None:
-            await context.send(
-                embed=discord.Embed(
-                    description="Not currently recording in this server.",
-                    color=0xFEE75C,
+        async with self._guild_lock(context.guild.id):
+            recorder = self.recorders.pop(context.guild.id, None)
+            if recorder is None:
+                await context.send(
+                    embed=discord.Embed(
+                        description="Not currently recording in this server.",
+                        color=0xFEE75C,
+                    )
                 )
-            )
-            return
+                return
 
-        logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
-        vc = context.guild.voice_client
-        await recorder.stop()
+            logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
+            await recorder.stop()
 
-        # Disconnect from voice
-        if context.guild.voice_client:
-            await context.guild.voice_client.disconnect(force=True)
+            # Disconnect from voice
+            if context.guild.voice_client:
+                await context.guild.voice_client.disconnect(force=True)
 
         logger.info(f"/stoprecord: Recording stopped and disconnected in {context.guild.name}")
         await context.send(
@@ -908,7 +941,9 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         try:
-            start_time = datetime.fromisoformat(start).replace(tzinfo=EASTERN)
+            parsed = datetime.fromisoformat(start)
+            # Treat a bare timestamp as Eastern; honour an explicit offset if given.
+            start_time = parsed.replace(tzinfo=EASTERN) if parsed.tzinfo is None else parsed.astimezone(EASTERN)
         except ValueError:
             await context.send(
                 embed=discord.Embed(
@@ -1176,13 +1211,16 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         For guilds WITHOUT a recorder: scan for populated channels to join.
         """
         for guild in self.bot.guilds:
-            recorder = self.recorders.get(guild.id)
-
-            if recorder is not None:
-                await self._check_voice_health(guild, recorder)
-                continue
-
-            await self._try_auto_join(guild)
+            # Isolate each guild — one guild's failure must not stop the loop
+            # (an unhandled exception here would kill health checks for everyone).
+            try:
+                recorder = self.recorders.get(guild.id)
+                if recorder is not None:
+                    await self._check_voice_health(guild, recorder)
+                else:
+                    await self._try_auto_join(guild)
+            except Exception as e:
+                logger.error(f"Voice health/auto-join check failed for {guild.name}: {e}", exc_info=True)
 
     async def _check_voice_health(self, guild: discord.Guild, recorder: VoiceRecorder):
         stale = recorder.seconds_since_last_packet
@@ -1228,37 +1266,38 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         settings = await self.bot.database.get_settings(guild.id)
 
-        old_recorder = self.recorders.pop(guild.id, None)
-        if old_recorder:
-            await old_recorder.stop()
-        if guild.voice_client:
-            try:
-                await guild.voice_client.disconnect(force=True)
-            except Exception:
-                pass
-        await asyncio.sleep(2)
+        async with self._guild_lock(guild.id):
+            old_recorder = self.recorders.pop(guild.id, None)
+            if old_recorder:
+                await old_recorder.stop()
+            if guild.voice_client:
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except Exception:
+                    pass
+            await asyncio.sleep(2)
 
-        try:
-            vc = await self._connect_voice(channel)
-            if vc is None:
-                logger.error(f"Voice health hard reconnect failed for {guild.name}")
-                return
-            new_recorder = VoiceRecorder(
-                bot=self.bot,
-                guild=guild,
-                channel=channel,
-                database=self.bot.database,
-                recordings_path=RECORDINGS_PATH,
-                segment_duration_sec=settings["segment_duration_sec"],
-                transcriber=self.transcriber,
-            )
-            await new_recorder.start(vc)
-            self.recorders[guild.id] = new_recorder
-            logger.info(
-                f"Voice health hard reconnect successful in {guild.name} / #{channel.name}"
-            )
-        except Exception as e:
-            logger.error(f"Voice health hard reconnect failed for {guild.name}: {e}")
+            try:
+                vc = await self._connect_voice(channel)
+                if vc is None:
+                    logger.error(f"Voice health hard reconnect failed for {guild.name}")
+                    return
+                new_recorder = VoiceRecorder(
+                    bot=self.bot,
+                    guild=guild,
+                    channel=channel,
+                    database=self.bot.database,
+                    recordings_path=RECORDINGS_PATH,
+                    segment_duration_sec=settings["segment_duration_sec"],
+                    transcriber=self.transcriber,
+                )
+                await new_recorder.start(vc)
+                self.recorders[guild.id] = new_recorder
+                logger.info(
+                    f"Voice health hard reconnect successful in {guild.name} / #{channel.name}"
+                )
+            except Exception as e:
+                logger.error(f"Voice health hard reconnect failed for {guild.name}: {e}")
 
     async def _try_auto_join(self, guild: discord.Guild):
         settings = await self.bot.database.get_settings(guild.id)
@@ -1283,26 +1322,31 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         if best_channel is None:
             return
 
-        try:
-            vc = await self._connect_voice(best_channel)
-            if vc is None:
+        async with self._guild_lock(guild.id):
+            # Re-check under the lock — a command or another cycle may have
+            # started recording for this guild while we were scanning channels.
+            if guild.id in self.recorders:
                 return
-            recorder = VoiceRecorder(
-                bot=self.bot,
-                guild=guild,
-                channel=best_channel,
-                database=self.bot.database,
-                recordings_path=RECORDINGS_PATH,
-                segment_duration_sec=settings["segment_duration_sec"],
-                transcriber=self.transcriber,
-            )
-            await recorder.start(vc)
-            self.recorders[guild.id] = recorder
-            logger.info(
-                f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
-            )
-        except Exception as e:
-            logger.error(f"Auto-join failed for {guild.name}: {e}")
+            try:
+                vc = await self._connect_voice(best_channel)
+                if vc is None:
+                    return
+                recorder = VoiceRecorder(
+                    bot=self.bot,
+                    guild=guild,
+                    channel=best_channel,
+                    database=self.bot.database,
+                    recordings_path=RECORDINGS_PATH,
+                    segment_duration_sec=settings["segment_duration_sec"],
+                    transcriber=self.transcriber,
+                )
+                await recorder.start(vc)
+                self.recorders[guild.id] = recorder
+                logger.info(
+                    f"Auto-joined {guild.name} / #{best_channel.name} ({best_count} members present)"
+                )
+            except Exception as e:
+                logger.error(f"Auto-join failed for {guild.name}: {e}")
 
     @auto_rejoin_loop.before_loop
     async def before_auto_rejoin(self):
@@ -1341,12 +1385,12 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         if not active_consented:
             # No consented users left — stop recording
-            vc = member.guild.voice_client
-            recorder = self.recorders.pop(guild_id, None)
-            if recorder:
-                await recorder.stop()
-            if member.guild.voice_client:
-                await member.guild.voice_client.disconnect(force=True)
+            async with self._guild_lock(guild_id):
+                recorder = self.recorders.pop(guild_id, None)
+                if recorder:
+                    await recorder.stop()
+                if member.guild.voice_client:
+                    await member.guild.voice_client.disconnect(force=True)
             logger.info(
                 f"Auto-stopped recording in {member.guild.name} — no consented users remain"
             )
@@ -1525,38 +1569,15 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
             )
             return
 
-        file_size = os.path.getsize(clip_path)
-        if file_size > 25 * 1024 * 1024:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB). Try a shorter duration.",
-                    color=0xED4245,
-                ),
-                ephemeral=True,
-            )
-            try:
-                os.remove(clip_path)
-            except OSError:
-                pass
-            return
-
         play_from = datetime.fromtimestamp(self.seg[4] + (offset_minutes * 60), tz=EASTERN)
         start_str = play_from.strftime("%I:%M %p")
-        logger.info(f"DownloadModal: Sending clip for user {self.target_user.id} at {start_str} ({duration_minutes} min, {file_size} bytes)")
+        logger.info(f"DownloadModal: Sending clip for user {self.target_user.id} at {start_str} ({duration_minutes} min)")
         embed = discord.Embed(
             title="Audio Clip Retrieved",
             description=f"**User:** {self.target_user.mention}\n**Start:** {start_str}\n**Duration:** {duration_minutes} min",
             color=0x5865F2,
         )
-        await interaction.followup.send(
-            embed=embed,
-            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
-        )
-
-        try:
-            os.remove(clip_path)
-        except OSError:
-            pass
+        await self.cog._deliver_clip_file(interaction, clip_path, embed)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.error(f"DownloadModal error: {error}", exc_info=True)
@@ -1654,23 +1675,90 @@ class _FavoriteModal(discord.ui.Modal, title="Add to Favorites"):
             pass
 
 
-class _ClipSelectView(discord.ui.View):
+class _PaginatedSelectView(discord.ui.View):
+    """Shared pagination, ownership check, and timeout handling for the segment
+    and favorite menus. Subclasses implement `_rebuild_items()` (which should call
+    `self._add_pagination_buttons()`) and `build_embed()`."""
+
+    def __init__(self, invoker_id: int, total_items: int, per_page: int = 10, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.invoker_id = invoker_id
+        self.per_page = per_page
+        self.page = 0
+        self.total_pages = max(1, (total_items + per_page - 1) // per_page)
+        self.message = None  # set by caller for on_timeout
+
+    def _recount_pages(self, total_items: int):
+        """Recompute page count after the underlying item list changes."""
+        self.total_pages = max(1, (total_items + self.per_page - 1) // self.per_page)
+        self.page = min(self.page, self.total_pages - 1)
+
+    def _add_pagination_buttons(self):
+        """Add First/Prev/page/Next/Last when there's more than one page."""
+        if self.total_pages <= 1:
+            return
+        first_btn = discord.ui.Button(label="⏮ First", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+        first_btn.callback = self._first_page
+        self.add_item(first_btn)
+
+        prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+        prev_btn.callback = self._prev_page
+        self.add_item(prev_btn)
+
+        page_btn = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.primary, disabled=True)
+        self.add_item(page_btn)
+
+        next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+        next_btn.callback = self._next_page
+        self.add_item(next_btn)
+
+        last_btn = discord.ui.Button(label="Last ⏭", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+        last_btn.callback = self._last_page
+        self.add_item(last_btn)
+
+    async def _goto_page(self, interaction: discord.Interaction, page: int):
+        self.page = page
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _first_page(self, interaction): await self._goto_page(interaction, 0)
+    async def _prev_page(self, interaction): await self._goto_page(interaction, max(0, self.page - 1))
+    async def _next_page(self, interaction): await self._goto_page(interaction, min(self.total_pages - 1, self.page + 1))
+    async def _last_page(self, interaction): await self._goto_page(interaction, self.total_pages - 1)
+
+    async def on_timeout(self):
+        """Disable all items when the view times out so stale menus don't confuse users."""
+        for item in self.children:
+            item.disabled = True
+        try:
+            if self.message:
+                embed = self.build_embed()
+                embed.set_footer(text="This menu has timed out. Run the command again to browse.")
+                await self.message.edit(embed=embed, view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can use this menu.", ephemeral=True,
+            )
+            return False
+        return True
+
+
+class _ClipSelectView(_PaginatedSelectView):
     def __init__(self, cog, segments, target_user, invoker_id, date, mode="play"):
-        super().__init__(timeout=120)
+        super().__init__(invoker_id, len(segments))
         self.cog = cog
         self.segments = segments
         # When results span more than one calendar day (Eastern), show the date
         # alongside each time so users can tell which day a segment is from.
         self.multi_day = len({datetime.fromtimestamp(s[4], tz=EASTERN).date() for s in segments}) > 1
         self.target_user = target_user
-        self.invoker_id = invoker_id
         self.date = date
         self.mode = mode  # "play", "download", or "text"
         self.favorite_mode = False  # when True, selecting a segment saves it to favorites
-        self.page = 0
-        self.per_page = 10
-        self.total_pages = max(1, (len(segments) + self.per_page - 1) // self.per_page)
-        self.message = None  # set by caller for on_timeout
         self._rebuild_items()
 
     def _page_segments(self):
@@ -1715,25 +1803,7 @@ class _ClipSelectView(discord.ui.View):
         select.callback = self.on_select
         self.add_item(select)
 
-        if self.total_pages > 1:
-            first_btn = discord.ui.Button(label="⏮ First", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
-            first_btn.callback = self._first_page
-            self.add_item(first_btn)
-
-            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
-            prev_btn.callback = self._prev_page
-            self.add_item(prev_btn)
-
-            page_btn = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.primary, disabled=True)
-            self.add_item(page_btn)
-
-            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
-            next_btn.callback = self._next_page
-            self.add_item(next_btn)
-
-            last_btn = discord.ui.Button(label="Last ⏭", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
-            last_btn.callback = self._last_page
-            self.add_item(last_btn)
+        self._add_pagination_buttons()
 
         # ⭐ favorite toggle — lets the user save a clip without playing/downloading it.
         # Auto-flows to its own row (the select fills row 0, pagination fills row 1).
@@ -1777,46 +1847,6 @@ class _ClipSelectView(discord.ui.View):
             action = "play"
         embed.set_footer(text=f"{len(self.segments)} segment(s) • Select one below to {action}")
         return embed
-
-    async def on_timeout(self):
-        """Disable all items when the view times out so stale menus don't confuse users."""
-        for item in self.children:
-            item.disabled = True
-        try:
-            if self.message:
-                embed = self.build_embed()
-                embed.set_footer(text="This menu has timed out. Run the command again to browse.")
-                await self.message.edit(embed=embed, view=self)
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-    async def _first_page(self, interaction: discord.Interaction):
-        self.page = 0
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _prev_page(self, interaction: discord.Interaction):
-        self.page = max(0, self.page - 1)
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _next_page(self, interaction: discord.Interaction):
-        self.page = min(self.total_pages - 1, self.page + 1)
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _last_page(self, interaction: discord.Interaction):
-        self.page = self.total_pages - 1
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message(
-                "Only the person who ran this command can use this menu.", ephemeral=True,
-            )
-            return False
-        return True
 
     async def on_select(self, interaction: discord.Interaction):
         selected_id = int(interaction.data["values"][0])
@@ -1881,21 +1911,16 @@ class _ClipSelectView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 
-class _FavoriteSelectView(discord.ui.View):
+class _FavoriteSelectView(_PaginatedSelectView):
     """Browse a user's saved favorites: select to download, or toggle remove mode."""
 
     def __init__(self, cog, favorites, invoker_id, mode="download"):
-        super().__init__(timeout=120)
+        super().__init__(invoker_id, len(favorites))
         self.cog = cog
         # rows: (id, segment_id, target_user_id, offset_sec, duration_min, label, created_at)
         self.favorites = favorites
-        self.invoker_id = invoker_id
         self.mode = mode  # "download" or "play"
         self.remove_mode = False
-        self.page = 0
-        self.per_page = 10
-        self.total_pages = max(1, (len(favorites) + self.per_page - 1) // self.per_page)
-        self.message = None  # set by caller for on_timeout
         self._rebuild_items()
 
     def _page_favorites(self):
@@ -1920,25 +1945,7 @@ class _FavoriteSelectView(discord.ui.View):
         select.callback = self.on_select
         self.add_item(select)
 
-        if self.total_pages > 1:
-            first_btn = discord.ui.Button(label="⏮ First", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
-            first_btn.callback = self._first_page
-            self.add_item(first_btn)
-
-            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
-            prev_btn.callback = self._prev_page
-            self.add_item(prev_btn)
-
-            page_btn = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.primary, disabled=True)
-            self.add_item(page_btn)
-
-            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
-            next_btn.callback = self._next_page
-            self.add_item(next_btn)
-
-            last_btn = discord.ui.Button(label="Last ⏭", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
-            last_btn.callback = self._last_page
-            self.add_item(last_btn)
+        self._add_pagination_buttons()
 
         if self.remove_mode:
             toggle = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary)
@@ -1970,49 +1977,10 @@ class _FavoriteSelectView(discord.ui.View):
         embed.set_footer(text=f"{len(self.favorites)} favorite(s) • Select one below to {action}")
         return embed
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        try:
-            if self.message:
-                embed = self.build_embed()
-                embed.set_footer(text="This menu has timed out. Run the command again to browse.")
-                await self.message.edit(embed=embed, view=self)
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-    async def _first_page(self, interaction: discord.Interaction):
-        self.page = 0
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _prev_page(self, interaction: discord.Interaction):
-        self.page = max(0, self.page - 1)
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _next_page(self, interaction: discord.Interaction):
-        self.page = min(self.total_pages - 1, self.page + 1)
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _last_page(self, interaction: discord.Interaction):
-        self.page = self.total_pages - 1
-        self._rebuild_items()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
     async def _toggle_remove(self, interaction: discord.Interaction):
         self.remove_mode = not self.remove_mode
         self._rebuild_items()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message(
-                "Only the person who ran this command can use this menu.", ephemeral=True,
-            )
-            return False
-        return True
 
     async def on_select(self, interaction: discord.Interaction):
         fav_id = int(interaction.data["values"][0])
@@ -2025,8 +1993,7 @@ class _FavoriteSelectView(discord.ui.View):
         if self.remove_mode:
             await self.cog.bot.database.remove_favorite(self.invoker_id, fav_id)
             self.favorites = [f for f in self.favorites if f[0] != fav_id]
-            self.total_pages = max(1, (len(self.favorites) + self.per_page - 1) // self.per_page)
-            self.page = min(self.page, self.total_pages - 1)
+            self._recount_pages(len(self.favorites))
             if not self.favorites:
                 for item in self.children:
                     item.disabled = True
@@ -2080,28 +2047,9 @@ class _FavoriteSelectView(discord.ui.View):
             )
             return
 
-        file_size = os.path.getsize(clip_path)
-        if file_size > 25 * 1024 * 1024:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    description=f"Clip is too large ({file_size / 1024 / 1024:.1f} MB).",
-                    color=0xED4245,
-                ),
-                ephemeral=True,
-            )
-            self.cog._cleanup_file(clip_path)
-            return
-
-        logger.info(f"Favorites: sending favorite {fav_id} ({duration_min} min, {file_size} bytes)")
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="⭐ Favorite Clip",
-                description=disp,
-                color=0xF1C40F,
-            ),
-            file=discord.File(clip_path, filename=os.path.basename(clip_path)),
-        )
-        self.cog._cleanup_file(clip_path)
+        logger.info(f"Favorites: sending favorite {fav_id} ({duration_min} min)")
+        embed = discord.Embed(title="⭐ Favorite Clip", description=disp, color=0xF1C40F)
+        await self.cog._deliver_clip_file(interaction, clip_path, embed)
 
     async def _play_favorite(self, interaction, seg, fav_id, target_user_id, offset_sec, duration_min, label):
         disp = label or f"Segment {seg[0]}"

@@ -71,6 +71,7 @@ class SegmentCleanup:
 
             if deleted_ids:
                 await self.db.delete_perf_logs_by_segment_ids(deleted_ids)
+                await self.db.delete_favorites_by_segment_ids(deleted_ids)
                 await self.db.delete_segments_by_ids(deleted_ids)
 
             if removed > 0:

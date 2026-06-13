@@ -19,7 +19,28 @@ class ClipRetriever:
         self.db = database
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
+        self._purge_stale_clips()
         logger.info(f"ClipRetriever initialized — output: {output_path}")
+
+    def _purge_stale_clips(self):
+        """Remove leftover clip files from a previous run — clips are transient
+        outputs normally deleted after delivery, so anything still here on
+        startup was orphaned by a crash or hard shutdown."""
+        removed = 0
+        try:
+            entries = os.listdir(self.output_path)
+        except OSError:
+            return
+        for name in entries:
+            path = os.path.join(self.output_path, name)
+            if os.path.isfile(path):
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
+        if removed:
+            logger.info(f"Purged {removed} orphaned clip file(s) from {self.output_path}")
 
     async def retrieve_clip(
         self,
