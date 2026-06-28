@@ -12,6 +12,7 @@ from discord.ext.commands import Context
 from dotenv import load_dotenv
 
 from database import DatabaseManager
+from utils.reconnect import cap_reconnect_backoff
 
 load_dotenv()
 
@@ -298,4 +299,6 @@ class DiscordBot(commands.Bot):
 
 
 bot = DiscordBot()
+cap_reconnect_backoff(max_exp=5)
+
 bot.run(os.getenv("DiscordVoiceDatabase_TOKEN"))
