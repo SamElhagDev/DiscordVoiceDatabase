@@ -26,11 +26,11 @@ except ImportError:
 
 logger = logging.getLogger("discord_bot")
 
-# PCM: 48kHz stereo 16-bit signed LE (discord.py voice receive format)
+# PCM settings from discord.py voice receive: 48kHz, stereo, 16-bit signed LE
 SAMPLE_RATE = 48000
 CHANNELS = 2
-SAMPLE_WIDTH = 2
-BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH
+SAMPLE_WIDTH = 2  # 16-bit
+BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
 
 
 class UserStream:
@@ -45,6 +45,7 @@ class UserStream:
         self.segment_db_id = None
         self._has_data = False
 
+        # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
         self.directory = os.path.join(base_path, str(guild_id), str(user_id))
         os.makedirs(self.directory, exist_ok=True)
@@ -76,18 +77,12 @@ class UserStream:
 
 
 FRAME_SIZE_SAMPLES = 960  # 20ms at 48kHz
-FRAME_BYTES = FRAME_SIZE_SAMPLES * CHANNELS * SAMPLE_WIDTH
+FRAME_BYTES = FRAME_SIZE_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 3840 bytes per frame
 SILENCE_FRAME = b"\x00" * FRAME_BYTES
-MAX_PLC_FRAMES = 10       # Opus PLC quality degrades past ~200ms
-PLC_FADE_FRAMES = 3
-JITTER_DEPTH = 12         # 240ms reorder window
-DECODER_RESET_THRESHOLD = 5
-
-# Decoder resets clustering this tightly means a persistent per-user DAVE
-# decrypt failure, not transient packet loss — back off instead of spinning.
-DAVE_RESET_BURST_THRESHOLD = 3
-DAVE_RESET_BURST_WINDOW = 5.0
-DAVE_QUARANTINE_SECONDS = 15.0
+MAX_PLC_FRAMES = 10       # ~200ms: Opus PLC degrades but still beats hard silence
+PLC_FADE_FRAMES = 3       # fade out last 60ms of PLC before silence boundary
+JITTER_DEPTH = 12         # 240ms reorder window — recording has no latency cost
+DECODER_RESET_THRESHOLD = 5  # consecutive decode failures before nuking decoder state
 
 
 def _seq_delta(a: int, b: int) -> int:
@@ -105,8 +100,14 @@ def _scale_pcm(pcm: bytes, factor: float) -> bytes:
 
 
 class _JitterBuffer:
-    """Per-user reorder buffer; holds JITTER_DEPTH frames so late arrivals
-    slot into order before gap-fill logic runs."""
+    """
+    Per-user reorder buffer.  Holds incoming Opus packets for JITTER_DEPTH
+    frames so that late arrivals slot into sequence order before gap-fill
+    logic runs.
+
+    Recording context — latency is free, so a generous buffer window avoids
+    treating mobile jitter spikes as packet loss.
+    """
 
     __slots__ = ("_depth", "_pkts", "_base")
 
@@ -116,8 +117,11 @@ class _JitterBuffer:
         self._base: int | None = None
 
     def push(self, seq: int, opus_bytes: bytes) -> list[tuple[int, bytes | None]]:
-        """Insert a packet; returns ready-to-decode (seq, opus_bytes | None)
-        entries in order, None marking a confirmed lost packet."""
+        """
+        Insert a packet.  Returns a (possibly empty) list of
+        (sequence, opus_bytes | None) entries ready to decode, in order.
+        None entries represent confirmed lost packets.
+        """
         if self._base is not None:
             delta = _seq_delta(self._base, seq)
             if delta < 0:
@@ -158,9 +162,19 @@ class _JitterBuffer:
 
 
 class _PerUserPCMSink(voice_recv.AudioSink):
-    """Receives per-user Opus frames from voice_recv, decrypts DAVE E2EE,
-    reorders via jitter buffer, and decodes to PCM. Lost packets are
-    recovered with FEC/PLC and faded into silence for longer gaps."""
+    """
+    Receives per-user Opus frames from voice_recv, applies DAVE E2EE decryption
+    when the channel has end-to-end encryption active, then decodes to PCM.
+
+    A per-user jitter buffer reorders late-arriving packets (common on mobile)
+    before gap-fill logic runs, so only truly lost packets trigger PLC.
+
+    Handles confirmed packet loss by:
+      1. FEC recovery (decode next packet's redundancy data for the lost one)
+      2. PLC (Opus decoder extrapolates from internal state, up to ~200ms)
+      3. Fade-out at PLC boundary to smooth the transition to silence
+      4. Silence padding for longer gaps
+    """
 
     _DAVE_LOG_INTERVAL = 60.0  # log DAVE fallbacks at most once per user per minute
 
@@ -172,8 +186,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         self._consecutive_failures: dict[int, int] = {}
         self._dave_log_times: dict[int, float] = {}
         self._dave_log_counts: dict[int, int] = {}
-        self._reset_times: dict[int, list[float]] = {}
-        self._quarantine_until: dict[int, float] = {}
 
     def wants_opus(self) -> bool:
         return True
@@ -181,18 +193,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
     def write(self, user, data: voice_recv.VoiceData):
         if user is None:
             return
-
-        quarantined_until = self._quarantine_until.get(user.id)
-        if quarantined_until is not None:
-            if time.monotonic() < quarantined_until:
-                # See _enter_quarantine — skip decode, emit silence like any lost frame.
-                self._callback(user, SILENCE_FRAME)
-                return
-            del self._quarantine_until[user.id]
-            self._reset_times.pop(user.id, None)
-            logger.warning(
-                f"DAVE quarantine lifted for user {user.id}: resuming decode attempts"
-            )
 
         from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
 
@@ -221,9 +221,12 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                         user.id, _davey.MediaType.audio, opus_bytes
                     )
                 except Exception as e:
-                    # Decrypt failures are usually just unencrypted passthrough
-                    # (e.g. UnencryptedWhenPassthroughDisabled, NoValidCryptorFound)
-                    # — always attempt the decode; quarantine below catches genuine garbage.
+                    # Decryption failed — pass raw bytes through to decoder.
+                    # Common cases:
+                    #   UnencryptedWhenPassthroughDisabled — valid unencrypted Opus
+                    #   NoValidCryptorFound — often unencrypted despite DAVE confusion
+                    # If the bytes are genuinely encrypted garbage, the Opus decoder
+                    # will fail and the resilient recovery handles it gracefully.
                     if logger.isEnabledFor(logging.DEBUG):
                         self._log_dave_fallback(user.id, e)
             else:
@@ -278,10 +281,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                             )
                         # Fresh decoder has no state — silence is all we can do
                         self._callback(user, SILENCE_FRAME)
-
-                        if self._record_reset_and_check_burst(user.id):
-                            self._enter_quarantine(user.id)
-                            return
                     else:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
@@ -344,7 +343,7 @@ class _PerUserPCMSink(voice_recv.AudioSink):
             self._callback(user, SILENCE_FRAME * remaining)
 
     def _log_dave_fallback(self, user_id: int, error: Exception):
-        """Rate-limited (once/user/minute) DAVE fallback logging with the raw error text."""
+        """Rate-limited DAVE fallback logging — once per user per minute."""
         now = time.monotonic()
         self._dave_log_counts[user_id] = self._dave_log_counts.get(user_id, 0) + 1
         last = self._dave_log_times.get(user_id, 0.0)
@@ -353,45 +352,10 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         count = self._dave_log_counts[user_id]
         self._dave_log_times[user_id] = now
         self._dave_log_counts[user_id] = 0
+        err_type = "unencrypted" if "Unencrypted" in str(error) else str(error)[:80]
         logger.debug(
-            f"DAVE fallback for user {user_id}: {str(error)[:120]!r} "
+            f"DAVE fallback for user {user_id}: {err_type} "
             f"({count} packets since last log)"
-        )
-
-    def _record_reset_and_check_burst(self, user_id: int) -> bool:
-        """True once decoder resets for user_id cluster within DAVE_RESET_BURST_WINDOW."""
-        now = time.monotonic()
-        times = self._reset_times.setdefault(user_id, [])
-        times.append(now)
-        cutoff = now - DAVE_RESET_BURST_WINDOW
-        while times and times[0] < cutoff:
-            times.pop(0)
-        return len(times) >= DAVE_RESET_BURST_THRESHOLD
-
-    def _enter_quarantine(self, user_id: int):
-        """Stop attempting decrypt/decode for user_id for DAVE_QUARANTINE_SECONDS."""
-        self._quarantine_until[user_id] = time.monotonic() + DAVE_QUARANTINE_SECONDS
-        self._reset_times.pop(user_id, None)
-
-        stats_msg = ""
-        dave_session = self._get_dave_session()
-        if dave_session is not None:
-            try:
-                stats = dave_session.get_decryption_stats(user_id, _davey.MediaType.audio)
-                if stats is not None:
-                    stats_msg = (
-                        f" | decrypt stats: successes={stats.successes} "
-                        f"failures={stats.failures} passthroughs={stats.passthroughs} "
-                        f"attempts={stats.attempts}"
-                    )
-            except Exception:
-                pass
-
-        logger.warning(
-            f"DAVE decode for user {user_id} failed {DAVE_RESET_BURST_THRESHOLD}+ times "
-            f"within {DAVE_RESET_BURST_WINDOW:.0f}s — quarantining decode attempts for "
-            f"{DAVE_QUARANTINE_SECONDS:.0f}s (recording silence for this user in the "
-            f"meantime).{stats_msg}"
         )
 
     def _get_decoder(self, user_id: int) -> opus_mod.Decoder:
@@ -423,8 +387,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         self._consecutive_failures.clear()
         self._dave_log_times.clear()
         self._dave_log_counts.clear()
-        self._reset_times.clear()
-        self._quarantine_until.clear()
 
 
 class VoiceRecorder:
@@ -606,6 +568,8 @@ class VoiceRecorder:
                     self.user_streams.pop(user_id, None)
                 return
 
+            # Swap in a fresh stream immediately so new packets aren't blocked
+            # during the disk flush below.
             if final:
                 self.user_streams.pop(user_id, None)
             else:
@@ -618,47 +582,39 @@ class VoiceRecorder:
 
         # Flush outside the lock — disk I/O must not block packet ingestion.
         rotate_start = time.time()
-        try:
-            pcm_path = stream.flush_to_disk()
-            ogg_path = stream.ogg_path
-            guild_id = stream.guild_id
-            channel_id = stream.channel_id
-            start_ts = stream.start_ts
-            elapsed = stream.elapsed
+        pcm_path = stream.flush_to_disk()
+        ogg_path = stream.ogg_path
+        guild_id = stream.guild_id
+        channel_id = stream.channel_id
+        start_ts = stream.start_ts
+        elapsed = stream.elapsed
 
-            if pcm_path is None:
-                return
+        if pcm_path is None:
+            return
 
-            end_ts = time.time()
-            file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
+        end_ts = time.time()
+        file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
 
-            segment_id = await self.db.add_completed_segment(
-                guild_id=guild_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                file_path=ogg_path,
-                file_size=file_size,
-            )
+        segment_id = await self.db.add_completed_segment(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            file_path=ogg_path,
+            file_size=file_size,
+        )
 
-            rotate_dur = time.time() - rotate_start
-            audio_dur = end_ts - start_ts
-            if audio_dur > 0:
-                await self.db.log_perf(segment_id, "rotate", rotate_dur, audio_dur)
+        rotate_dur = time.time() - rotate_start
+        audio_dur = end_ts - start_ts
+        if audio_dur > 0:
+            await self.db.log_perf(segment_id, "rotate", rotate_dur, audio_dur)
 
-            await self._remux_queue.put((pcm_path, ogg_path, segment_id, audio_dur))
+        await self._remux_queue.put((pcm_path, ogg_path, segment_id, audio_dur))
 
-            logger.debug(
-                f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
-            )
-        except Exception as e:
-            # Must not propagate — that would kill the shared rotation loop
-            # and silently stop recording for the whole channel.
-            logger.error(
-                f"Segment rotation failed for user {user_id} "
-                f"(pcm may be orphaned at {stream.pcm_path}): {e}"
-            )
+        logger.debug(
+            f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
+        )
 
     async def _remux_worker(self):
         try:
