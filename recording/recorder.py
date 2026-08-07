@@ -176,16 +176,12 @@ class _PerUserPCMSink(voice_recv.AudioSink):
       4. Silence padding for longer gaps
     """
 
-    _DAVE_LOG_INTERVAL = 60.0  # log DAVE fallbacks at most once per user per minute
-
     def __init__(self, callback):
         super().__init__()
         self._callback = callback
         self._decoders: dict[int, opus_mod.Decoder] = {}
         self._jitter: dict[int, _JitterBuffer] = {}
         self._consecutive_failures: dict[int, int] = {}
-        self._dave_log_times: dict[int, float] = {}
-        self._dave_log_counts: dict[int, int] = {}
 
     def wants_opus(self) -> bool:
         return True
@@ -221,14 +217,23 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                         user.id, _davey.MediaType.audio, opus_bytes
                     )
                 except Exception as e:
-                    # Decryption failed — pass raw bytes through to decoder.
-                    # Common cases:
-                    #   UnencryptedWhenPassthroughDisabled — valid unencrypted Opus
-                    #   NoValidCryptorFound — often unencrypted despite DAVE confusion
-                    # If the bytes are genuinely encrypted garbage, the Opus decoder
-                    # will fail and the resilient recovery handles it gracefully.
-                    if logger.isEnabledFor(logging.DEBUG):
-                        self._log_dave_fallback(user.id, e)
+                    if "UnencryptedWhenPassthroughDisabled" in str(e):
+                        # Verified-safe case: valid unencrypted Opus. Fall
+                        # through to the decoder with the raw bytes.
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                f"DAVE passthrough fallback for user {user.id} "
+                                f"(unencrypted packet)"
+                            )
+                    else:
+                        # Any other decrypt failure (e.g. NoValidCryptorFound)
+                        # is not verified-safe to pass through raw — it can
+                        # mean this user's decryptor never got valid key
+                        # material, in which case every subsequent packet
+                        # would also fail. Drop this packet rather than feed
+                        # the Opus decoder bytes we don't trust.
+                        logger.debug(f"DAVE decrypt failed for user {user.id}: {e}")
+                        return
             else:
                 return
 
@@ -342,22 +347,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         if remaining > 0:
             self._callback(user, SILENCE_FRAME * remaining)
 
-    def _log_dave_fallback(self, user_id: int, error: Exception):
-        """Rate-limited DAVE fallback logging — once per user per minute."""
-        now = time.monotonic()
-        self._dave_log_counts[user_id] = self._dave_log_counts.get(user_id, 0) + 1
-        last = self._dave_log_times.get(user_id, 0.0)
-        if now - last < self._DAVE_LOG_INTERVAL:
-            return
-        count = self._dave_log_counts[user_id]
-        self._dave_log_times[user_id] = now
-        self._dave_log_counts[user_id] = 0
-        err_type = "unencrypted" if "Unencrypted" in str(error) else str(error)[:80]
-        logger.debug(
-            f"DAVE fallback for user {user_id}: {err_type} "
-            f"({count} packets since last log)"
-        )
-
     def _get_decoder(self, user_id: int) -> opus_mod.Decoder:
         d = self._decoders.get(user_id)
         if d is None:
@@ -385,8 +374,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         self._jitter.clear()
         self._decoders.clear()
         self._consecutive_failures.clear()
-        self._dave_log_times.clear()
-        self._dave_log_counts.clear()
 
 
 class VoiceRecorder:
