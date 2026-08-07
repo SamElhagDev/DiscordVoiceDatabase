@@ -582,39 +582,50 @@ class VoiceRecorder:
 
         # Flush outside the lock — disk I/O must not block packet ingestion.
         rotate_start = time.time()
-        pcm_path = stream.flush_to_disk()
-        ogg_path = stream.ogg_path
-        guild_id = stream.guild_id
-        channel_id = stream.channel_id
-        start_ts = stream.start_ts
-        elapsed = stream.elapsed
+        try:
+            pcm_path = stream.flush_to_disk()
+            ogg_path = stream.ogg_path
+            guild_id = stream.guild_id
+            channel_id = stream.channel_id
+            start_ts = stream.start_ts
+            elapsed = stream.elapsed
 
-        if pcm_path is None:
-            return
+            if pcm_path is None:
+                return
 
-        end_ts = time.time()
-        file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
+            end_ts = time.time()
+            file_size = os.path.getsize(pcm_path) if os.path.exists(pcm_path) else 0
 
-        segment_id = await self.db.add_completed_segment(
-            guild_id=guild_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            file_path=ogg_path,
-            file_size=file_size,
-        )
+            segment_id = await self.db.add_completed_segment(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                file_path=ogg_path,
+                file_size=file_size,
+            )
 
-        rotate_dur = time.time() - rotate_start
-        audio_dur = end_ts - start_ts
-        if audio_dur > 0:
-            await self.db.log_perf(segment_id, "rotate", rotate_dur, audio_dur)
+            rotate_dur = time.time() - rotate_start
+            audio_dur = end_ts - start_ts
+            if audio_dur > 0:
+                await self.db.log_perf(segment_id, "rotate", rotate_dur, audio_dur)
 
-        await self._remux_queue.put((pcm_path, ogg_path, segment_id, audio_dur))
+            await self._remux_queue.put((pcm_path, ogg_path, segment_id, audio_dur))
 
-        logger.debug(
-            f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
-        )
+            logger.debug(
+                f"Segment rotated: user={user_id} duration={elapsed:.1f}s size={file_size}"
+            )
+        except Exception as e:
+            # A single segment failing here must never take down the shared
+            # rotation loop — that would silently stop recording for every
+            # user in the channel. Log it and let the next tick keep going;
+            # the pcm at stream.pcm_path may be orphaned if it got flushed
+            # before the failure.
+            logger.error(
+                f"Segment rotation failed for user {user_id} "
+                f"(pcm may be orphaned at {stream.pcm_path}): {e}"
+            )
 
     async def _remux_worker(self):
         try:
