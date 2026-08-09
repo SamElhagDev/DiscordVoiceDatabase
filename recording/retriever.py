@@ -11,6 +11,9 @@ from datetime import datetime
 
 logger = logging.getLogger("discord_bot")
 
+# An OGG header with no audio is ~137 bytes — anything under this is silence.
+MIN_CLIP_SIZE = 1024
+
 
 class ClipRetriever:
     """Retrieves audio clips from recorded segments."""
@@ -23,9 +26,8 @@ class ClipRetriever:
         logger.info(f"ClipRetriever initialized — output: {output_path}")
 
     def _purge_stale_clips(self):
-        """Remove leftover clip files from a previous run — clips are transient
-        outputs normally deleted after delivery, so anything still here on
-        startup was orphaned by a crash or hard shutdown."""
+        """Remove leftover clips from a previous run. Clips are deleted after
+        delivery, so anything still here was orphaned by a crash."""
         removed = 0
         try:
             entries = os.listdir(self.output_path)
@@ -60,11 +62,9 @@ class ClipRetriever:
 
         Returns the path to the output OGG file, or None if no audio found.
         """
-        # When we have an anchor segment, query FORWARD from its start —
-        # never look backward at earlier segments.
+        # With an anchor, query FORWARD from its start — never look backward.
         if anchor_seg is not None:
-            start_ts = anchor_seg[4]  # anchor segment's start is our start
-            # Extend the query window to cover offset + duration
+            start_ts = anchor_seg[4]
             end_ts = start_ts + offset_sec + (duration_minutes * 60)
         else:
             start_ts = start_time.timestamp()
@@ -76,7 +76,6 @@ class ClipRetriever:
             + (f" anchor_seg={anchor_seg[0]}" if anchor_seg else "")
         )
 
-        # Find overlapping segments
         segments = await self.db.get_segments_in_range(
             user_id=user_id,
             start_ts=start_ts,
@@ -88,9 +87,8 @@ class ClipRetriever:
             logger.warning(f"No segments found in DB for user {user_id} in range [{start_ts:.0f}, {end_ts:.0f}]")
             return None
 
-        # With an anchor, drop anything that started before the anchor —
-        # the DB overlap query can still pull in an earlier segment whose
-        # end_ts crosses into our window.
+        # The overlap query can still return an earlier segment whose end_ts crosses
+        # into our window; drop anything that started before the anchor.
         if anchor_seg is not None:
             anchor_start = anchor_seg[4]
             before = len(segments)
@@ -103,8 +101,8 @@ class ClipRetriever:
 
         logger.debug(f"Found {len(segments)} DB segment(s) for clip retrieval")
 
-        # Filter to segments that actually have files on disk.
-        # Fall back to the sibling .pcm file if the .ogg hasn't been remuxed yet.
+        # Keep only segments with files on disk, falling back to the sibling .pcm
+        # when the .ogg hasn't been remuxed yet.
         valid_segments = []
         for seg in segments:
             file_path = seg[6]
@@ -125,15 +123,13 @@ class ClipRetriever:
             )
             return None
 
-        # Build output filename
         ts_str = start_time.strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(
             self.output_path, f"clip_{user_id}_{ts_str}_{duration_minutes}m.ogg"
         )
 
-        # Calculate trim offset:
-        #  - With anchor: offset_sec is the user's requested skip (already in seconds)
-        #  - Without anchor: compute from timestamp difference
+        # Trim offset: with an anchor it's the user's requested skip, already in
+        # seconds; without one it comes from the timestamp difference.
         if len(valid_segments) == 1:
             seg = valid_segments[0]
             seg_start_ts = seg[4]
@@ -187,8 +183,6 @@ class ClipRetriever:
                 self._concat_and_trim, file_list, output_file, trim_start, trim_duration
             )
 
-        # An OGG header with no audio is ~137 bytes — reject anything under 1KB
-        MIN_CLIP_SIZE = 1024
         if os.path.exists(output_file):
             out_size = os.path.getsize(output_file)
             if out_size >= MIN_CLIP_SIZE:
@@ -279,11 +273,10 @@ class ClipRetriever:
                 else:
                     normalized.append(f)
 
-            # Build filter_complex with acrossfade chained between each segment.
-            # Hard concat leaves a brief encoder pre-roll glitch at every boundary;
-            # a short crossfade (20 ms) covers it without being audible as an effect.
-            # adeclick is applied after the final crossfade (can't mix -af with
-            # -filter_complex in FFmpeg); on clean audio it is effectively a no-op.
+            # Hard concat leaves an encoder pre-roll glitch at every boundary, so
+            # chain a 20 ms acrossfade between segments — inaudible as an effect.
+            # adeclick goes after the final crossfade (FFmpeg won't mix -af with
+            # -filter_complex); on clean audio it's a no-op.
             n = len(normalized)
             cmd = ["ffmpeg", "-y", "-loglevel", "error"]
             for f in normalized:

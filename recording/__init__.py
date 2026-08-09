@@ -1,3 +1,5 @@
-from recording.recorder import VoiceRecorder
-from recording.retriever import ClipRetriever
-from recording.cleanup import SegmentCleanup
+"""Recording pipeline: capture (recorder), retrieval (retriever),
+transcription (transcriber), and retention (cleanup).
+
+Import submodules directly — ``from recording.recorder import VoiceRecorder``.
+"""

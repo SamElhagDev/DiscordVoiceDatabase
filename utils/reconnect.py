@@ -10,7 +10,6 @@ import logging
 import discord.backoff
 import discord.client
 
-# Use the bot's configured logger so this line lands in the same log file/console.
 logger = logging.getLogger("discord_bot")
 
 

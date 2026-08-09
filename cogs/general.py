@@ -3,9 +3,8 @@ from discord.ext import commands
 from discord.ext.commands import Context
 
 
-# Per-command icons and short display descriptions.
-# Descriptions here are intentionally shorter than the slash command descriptions,
-# which need to be verbose for Discord's autocomplete tooltip.
+# Deliberately shorter than the slash-command descriptions, which have to be
+# verbose for Discord's autocomplete tooltip.
 _ICONS = {
     "join":            "✅",
     "leave":           "🚫",
@@ -68,8 +67,7 @@ _DESCS = {
     "shutdown":        "Shut down the bot",
 }
 
-# Voice database sections — each rendered as its own full-width field for readability.
-# (title, [command names])
+# (title, [command names]) — each renders as its own full-width embed field.
 _VDB_SECTIONS = [
     ("👥  Participation", ["join", "leave", "participants"]),
     ("⏺️  Recording",     ["record", "stoprecord", "recordingstatus"]),
@@ -115,7 +113,7 @@ class General(commands.Cog, name="general"):
             color=0x5865F2,
         )
 
-        # ── Voice Database sections (each its own full-width field) ──────
+        # ── Voice Database ──────────────────────────────────────────────
         vdb = self.bot.get_cog("voicedatabase")
         if vdb:
             vdb_cmds = {cmd.name: cmd for cmd in vdb.get_commands()}
@@ -132,7 +130,7 @@ class General(commands.Cog, name="general"):
             if value:
                 embed.add_field(name="🔧  General", value=value, inline=False)
 
-        # ── Owner (only shown to the bot owner) ─────────────────────────
+        # ── Owner ───────────────────────────────────────────────────────
         if await self.bot.is_owner(context.author):
             owner = self.bot.get_cog("owner")
             if owner:

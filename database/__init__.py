@@ -2,7 +2,6 @@ import asyncio
 
 import aiosqlite
 import logging
-import os
 import time
 
 logger = logging.getLogger("discord_bot")
@@ -138,15 +137,6 @@ class DatabaseManager:
         async with rows as cursor:
             return await cursor.fetchall()
 
-    async def get_expired_segments(self, retention_days: int) -> list:
-        cutoff = time.time() - (retention_days * 86400)
-        rows = await self.connection.execute(
-            "SELECT id, file_path FROM segments WHERE end_ts IS NOT NULL AND end_ts < ?",
-            (cutoff,),
-        )
-        async with rows as cursor:
-            return await cursor.fetchall()
-
     async def get_expired_segments_per_guild(self, default_retention_days: int) -> list:
         """Get expired segments respecting per-guild retention settings.
         Falls back to *default_retention_days* for guilds without custom settings."""
@@ -229,15 +219,6 @@ class DatabaseManager:
             )
             await self.connection.commit()
             logger.debug(f"Transcript saved: segment={segment_id} length={len(transcript)}")
-
-    async def get_segment_transcript(self, segment_id: int) -> str | None:
-        rows = await self.connection.execute(
-            "SELECT transcript FROM segments WHERE id=?",
-            (segment_id,),
-        )
-        async with rows as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else None
 
     async def search_segments_by_transcript(
         self, user_id: int, start_ts: float, end_ts: float, query: str, guild_id: int = None

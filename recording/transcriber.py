@@ -22,6 +22,7 @@ class Transcriber:
         self._model = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task = None
+        self._load_task: asyncio.Task = None
 
     def _load_model(self):
         if self._model is None:
@@ -44,6 +45,8 @@ class Transcriber:
             logger.warning(f"Eager model load failed (will retry on first transcription): {e}")
 
     def stop(self):
+        if self._load_task:
+            self._load_task.cancel()
         if self._task:
             self._task.cancel()
             logger.info("Transcription worker stopped")
@@ -70,7 +73,7 @@ class Transcriber:
                         await self.db.log_perf(segment_id, "transcribe", duration, audio_duration)
                     logger.info(f"Transcribed segment {segment_id}: {result[:80]} ({duration:.2f}s)")
                 except Exception as e:
-                    logger.error(f"Transcription failed for segment {segment_id}: {e}")
+                    logger.error(f"Transcription failed for segment {segment_id}: {e}", exc_info=True)
                 finally:
                     self._queue.task_done()
         except asyncio.CancelledError:

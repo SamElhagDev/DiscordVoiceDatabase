@@ -18,6 +18,7 @@ import time
 import discord
 import discord.opus as opus_mod
 from discord.ext import voice_recv
+from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
 
 try:
     import davey as _davey
@@ -30,7 +31,6 @@ logger = logging.getLogger("discord_bot")
 SAMPLE_RATE = 48000
 CHANNELS = 2
 SAMPLE_WIDTH = 2  # 16-bit
-BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH  # 192,000 bytes/sec
 
 
 class UserStream:
@@ -45,7 +45,7 @@ class UserStream:
         self.segment_db_id = None
         self._has_data = False
 
-        # Build file path: recordings/<guild_id>/<user_id>/<timestamp>.pcm
+        # recordings/<guild_id>/<user_id>/<timestamp>.pcm
         ts_ms = int(self.start_ts * 1000)
         self.directory = os.path.join(base_path, str(guild_id), str(user_id))
         os.makedirs(self.directory, exist_ok=True)
@@ -101,12 +101,11 @@ def _scale_pcm(pcm: bytes, factor: float) -> bytes:
 
 class _JitterBuffer:
     """
-    Per-user reorder buffer.  Holds incoming Opus packets for JITTER_DEPTH
-    frames so that late arrivals slot into sequence order before gap-fill
-    logic runs.
+    Per-user reorder buffer. Holds incoming Opus packets for JITTER_DEPTH frames
+    so late arrivals slot into sequence order before gap-fill logic runs.
 
-    Recording context — latency is free, so a generous buffer window avoids
-    treating mobile jitter spikes as packet loss.
+    Latency is free when recording, so a generous window avoids mistaking mobile
+    jitter spikes for packet loss.
     """
 
     __slots__ = ("_depth", "_pkts", "_base")
@@ -194,8 +193,6 @@ class _PerUserPCMSink(voice_recv.AudioSink):
         if user is None:
             return
 
-        from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
-
         if isinstance(data.packet, SilencePacket):
             buf = self._jitter.get(user.id)
             if buf:
@@ -221,12 +218,10 @@ class _PerUserPCMSink(voice_recv.AudioSink):
                         user.id, _davey.MediaType.audio, opus_bytes
                     )
                 except Exception as e:
-                    # Decryption failed — pass raw bytes through to decoder.
-                    # Common cases:
-                    #   UnencryptedWhenPassthroughDisabled — valid unencrypted Opus
-                    #   NoValidCryptorFound — often unencrypted despite DAVE confusion
-                    # If the bytes are genuinely encrypted garbage, the Opus decoder
-                    # will fail and the resilient recovery handles it gracefully.
+                    # Usually valid unencrypted Opus that DAVE misread
+                    # (UnencryptedWhenPassthroughDisabled / NoValidCryptorFound), so
+                    # pass the raw bytes through. Genuine garbage fails in the decoder,
+                    # where the gap-fill recovery handles it.
                     if logger.isEnabledFor(logging.DEBUG):
                         self._log_dave_fallback(user.id, e)
             else:
@@ -418,6 +413,7 @@ class VoiceRecorder:
         self.segment_duration_sec = segment_duration_sec
         self.transcriber = transcriber
         self.user_streams: dict[int, UserStream] = {}
+        self.voice_client = None  # set by start(); teardown paths run before it exists
         self._streams_lock = threading.Lock()
         self.consented_users: set[int] = set()
         self._running = False
@@ -568,8 +564,7 @@ class VoiceRecorder:
                     self.user_streams.pop(user_id, None)
                 return
 
-            # Swap in a fresh stream immediately so new packets aren't blocked
-            # during the disk flush below.
+            # Swap in a fresh stream now so the disk flush below doesn't block packets.
             if final:
                 self.user_streams.pop(user_id, None)
             else:
@@ -634,7 +629,7 @@ class VoiceRecorder:
                         if self.transcriber:
                             await self.transcriber.enqueue(ogg_path, segment_id, audio_dur)
                 except Exception as e:
-                    logger.error(f"Remux failed for {pcm_path}: {e}")
+                    logger.error(f"Remux failed for {pcm_path}: {e}", exc_info=True)
                 finally:
                     self._remux_queue.task_done()
         except asyncio.CancelledError:

@@ -47,7 +47,6 @@ class SegmentCleanup:
 
             removed = 0
             deleted_ids = []
-            recordings_root = os.path.abspath(RECORDINGS_PATH)
 
             for seg_id, file_path in old_segments:
                 try:
@@ -60,7 +59,7 @@ class SegmentCleanup:
                     deleted_ids.append(seg_id)
 
                     parent = os.path.dirname(file_path)
-                    while parent and os.path.abspath(parent) != recordings_root:
+                    while parent and os.path.abspath(parent) != RECORDINGS_PATH:
                         try:
                             os.rmdir(parent)
                             parent = os.path.dirname(parent)
@@ -77,4 +76,4 @@ class SegmentCleanup:
             if removed > 0:
                 logger.info(f"Cleanup: removed {removed} old segment files")
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+            logger.error(f"Cleanup error: {e}", exc_info=True)

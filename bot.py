@@ -3,7 +3,7 @@ import logging.handlers
 import os
 import platform
 import random
-import sys
+import sqlite3
 
 import aiosqlite
 import discord
@@ -16,8 +16,7 @@ from utils.reconnect import cap_reconnect_backoff
 
 load_dotenv()
 
-# Configurable paths — override via .env or environment variables
-# Defaults work for both Windows direct-run and Docker
+# Paths — override via .env; defaults work for both Windows direct-run and Docker.
 _BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.getenv("DiscordVoiceDatabase_DB_PATH", os.path.join(_BASE, "data", "database.db"))
 RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", os.path.join(_BASE, "recordings"))
@@ -25,18 +24,17 @@ CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", os.path.join(_BASE, "c
 LOGS_PATH = os.path.join(_BASE, "logs")
 
 VERSION = os.getenv("DiscordVoiceDatabase_VERSION", "1.0.0")
+PREFIX = os.getenv("DiscordVoiceDatabase_PREFIX", "!")
 _role_id_str = os.getenv("DiscordVoiceDatabase_ROLE_ID", "")
 REQUIRED_ROLE_ID: int | None = int(_role_id_str) if _role_id_str.strip() else None
 
-# Ensure directories exist
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(RECORDINGS_PATH, exist_ok=True)
 os.makedirs(CLIPS_PATH, exist_ok=True)
 os.makedirs(LOGS_PATH, exist_ok=True)
 
 
-# Only enable intents the bot actually uses — reduces gateway event volume.
-# Notably excludes presences (heaviest intent), typing, reactions, bans, etc.
+# Only the intents actually used — excludes presences (heaviest), typing, reactions, bans.
 intents = discord.Intents.none()
 intents.guilds = True          # guild create/update/delete, channel events
 intents.voice_states = True    # voice state updates (core functionality)
@@ -67,7 +65,7 @@ class LoggingFormatter(logging.Formatter):
 
     def __init__(self):
         super().__init__()
-        # Pre-build a Formatter per log level so format() doesn't construct one per call
+        # One Formatter per level so format() doesn't build one per call.
         self._formatters: dict[int, logging.Formatter] = {}
         for level, color in self.COLORS.items():
             fmt = (
@@ -80,7 +78,7 @@ class LoggingFormatter(logging.Formatter):
     def format(self, record):
         formatter = self._formatters.get(record.levelno)
         if formatter is None:
-            # Fallback for unexpected log levels — cache on first encounter
+            # Unexpected level — cache on first encounter.
             fmt = (
                 f"{self.black}{self.bold}{{asctime}}{self.reset} "
                 f"{self.gray}{{levelname:<8}}{self.reset} "
@@ -97,7 +95,7 @@ logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
 
-# Single rotating file handler shared by all loggers — caps disk usage
+# One rotating handler shared by all loggers, so disk usage stays capped.
 file_handler = logging.handlers.RotatingFileHandler(
     filename=os.path.join(LOGS_PATH, "DiscordVoiceDatabase.log"), encoding="utf-8", mode="a",
     maxBytes=10 * 1024 * 1024,  # 10 MB per file
@@ -111,7 +109,7 @@ file_handler.setFormatter(file_handler_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
-# Library loggers share the same rotating file handler (single fd, no buffering quirks)
+# Library loggers reuse that handler — single fd, no buffering quirks.
 _voice_logger = logging.getLogger("discord.voice_client")
 _voice_logger.setLevel(logging.DEBUG)
 _voice_logger.addHandler(file_handler)
@@ -124,13 +122,13 @@ _gateway_logger.addHandler(file_handler)
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(
-            command_prefix=commands.when_mentioned_or(os.getenv("DiscordVoiceDatabase_PREFIX", "!")),
+            command_prefix=commands.when_mentioned_or(PREFIX),
             intents=intents,
             help_command=None,
         )
         self.logger = logger
         self.database = None
-        self.bot_prefix = os.getenv("DiscordVoiceDatabase_PREFIX", "!")
+        self.bot_prefix = PREFIX
         self.invite_link = os.getenv("DiscordVoiceDatabase_INVITE_LINK", "")
         self.version = VERSION
         self.required_role_id = REQUIRED_ROLE_ID
@@ -154,8 +152,13 @@ class DiscordBot(commands.Bot):
                 await connection.execute(sql)
                 await connection.commit()
                 self.logger.info(f"Applied migration: {sql}")
-            except Exception:
-                pass  # column already exists
+            except sqlite3.OperationalError as e:
+                # "duplicate column name" is expected after the first run; anything
+                # else is a real failure and shouldn't vanish silently.
+                if "duplicate column name" in str(e).lower():
+                    self.logger.debug(f"Migration already applied: {sql}")
+                else:
+                    self.logger.warning(f"Migration failed: {sql} — {e}")
         self.logger.info("Database schema ready")
 
     async def load_cogs(self) -> None:
@@ -198,8 +201,7 @@ class DiscordBot(commands.Bot):
         self.logger.info(f"Clips: {CLIPS_PATH}")
         self.logger.info("-------------------")
 
-        # Open the long-lived connection, enable WAL for concurrent read/write,
-        # then init schema — all on the SAME connection object.
+        # Connection, WAL, and schema init must all run on the SAME connection object.
         connection = await aiosqlite.connect(DB_PATH)
         await connection.execute("PRAGMA journal_mode=WAL")
         await self._init_schema(connection)

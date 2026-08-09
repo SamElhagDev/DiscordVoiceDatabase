@@ -4,13 +4,12 @@ and clip retrieval.
 """
 
 import asyncio
-import os
 import logging
+import math
+import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
-EASTERN = ZoneInfo("America/New_York")
 
 import discord
 from discord import app_commands
@@ -23,6 +22,8 @@ from recording.cleanup import SegmentCleanup
 from recording.transcriber import Transcriber
 
 logger = logging.getLogger("discord_bot")
+
+EASTERN = ZoneInfo("America/New_York")
 
 RECORDINGS_PATH = os.getenv("DiscordVoiceDatabase_RECORDINGS_PATH", "recordings")
 CLIPS_PATH = os.getenv("DiscordVoiceDatabase_CLIPS_PATH", "clips")
@@ -69,11 +70,10 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         self.retriever = None
         self.cleanup = None
         self.transcriber = None
-        # Tracks guilds where a soft reconnect was already attempted this cycle.
-        # If still stale on the next health check the hard reconnect path is used.
+        # Guilds already soft-reconnected this cycle; still stale next check → hard reconnect.
         self._soft_reconnect_tried: set[int] = set()
-        # Per-guild lock serializing recorder create/destroy so the auto-rejoin
-        # loop, voice-state listener, and commands can't race on self.recorders.
+        # Serializes recorder create/destroy so the auto-rejoin loop, voice-state
+        # listener, and commands can't race on self.recorders.
         self._guild_locks: dict[int, asyncio.Lock] = {}
 
     def _guild_lock(self, guild_id: int) -> asyncio.Lock:
@@ -84,9 +84,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         return lock
 
     async def cog_load(self):
-        """Called when the cog is loaded. Start cleanup task."""
+        """Start the retriever, cleanup, transcriber, and auto-rejoin loop."""
         logger.info("VoiceDatabase cog loading...")
-        # Wait until db is ready (setup_hook sets self.bot.database)
         self.retriever = ClipRetriever(self.bot.database, output_path=CLIPS_PATH)
         self.cleanup = SegmentCleanup(self.bot.database, default_retention_days=RETENTION_DAYS)
         self.cleanup.start()
@@ -96,7 +95,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         logger.info("VoiceDatabase cog loaded — cleanup, transcriber, and auto-rejoin active")
 
     async def cog_unload(self):
-        """Called when the cog is unloaded. Stop all recordings."""
+        """Stop the background tasks and every active recording."""
         logger.info("VoiceDatabase cog unloading...")
         self.auto_rejoin_loop.cancel()
         if self.cleanup:
@@ -125,7 +124,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         """Suppress CheckFailure from cog_check — the message was already sent."""
         if isinstance(error, commands.CheckFailure):
             return
-        # Let other errors propagate to the bot-level handler
         raise error
 
     async def _connect_voice(self, channel: discord.VoiceChannel) -> discord.VoiceClient | None:
@@ -270,8 +268,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             # Only move when not recording; moving while recording breaks the session.
             await vc.move_to(voice_channel)
             await asyncio.sleep(1)
-        # If recording is active and user is in a different channel, the clip plays
-        # in the recording channel — the bot does not move.
+        # While recording, the clip plays in the recording channel — the bot never moves.
 
         if vc.is_playing():
             vc.stop()
@@ -311,7 +308,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
         await _play_chime(vc, CHIME_END)
 
-        # Always resume the recording sink
         if recorder:
             recorder.resume_listening()
 
@@ -371,7 +367,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
                 description=f"{context.author.mention} has opted in to voice recording.",
                 color=0x57F287,
             )
-            # Refresh consent on active recorder
             recorder = self.recorders.get(context.guild.id)
             if recorder:
                 await recorder.refresh_consent()
@@ -457,7 +452,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
 
             settings = await self.bot.database.get_settings(context.guild.id)
 
-            # Determine which channel to join
             channel = None
             if context.author.voice and context.author.voice.channel:
                 channel = context.author.voice.channel
@@ -524,7 +518,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             logger.info(f"/stoprecord: Stopping recording in guild {context.guild.id}")
             await recorder.stop()
 
-            # Disconnect from voice
             if context.guild.voice_client:
                 await context.guild.voice_client.disconnect(force=True)
 
@@ -962,7 +955,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             )
             return
 
-        # Determine voice channel — prefer the invoker's channel
+        # Prefer the invoker's channel.
         voice_channel = None
         if context.author.voice and context.author.voice.channel:
             voice_channel = context.author.voice.channel
@@ -1088,7 +1081,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         if settings["primary_channel_id"]:
             primary_ch = context.guild.get_channel(settings["primary_channel_id"])
 
-        # Fetch talk time stats for past week and all time
         week_ago = time.time() - 7 * 86400
         week_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=week_ago)
         alltime_stats = await self.bot.database.get_talk_time_by_user(context.guild.id, since_ts=0.0)
@@ -1211,8 +1203,7 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         For guilds WITHOUT a recorder: scan for populated channels to join.
         """
         for guild in self.bot.guilds:
-            # Isolate each guild — one guild's failure must not stop the loop
-            # (an unhandled exception here would kill health checks for everyone).
+            # Isolate each guild — an unhandled exception here kills health checks for everyone.
             try:
                 recorder = self.recorders.get(guild.id)
                 if recorder is not None:
@@ -1257,7 +1248,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         # ── Hard reconnect (soft failed or vc already gone) ─────────────
-        # Fully stops the recorder, disconnects, and rejoins the channel.
         self._soft_reconnect_tried.discard(guild.id)
         logger.warning(
             f"Voice audio stale for {stale:.0f}s in {guild.name} / "
@@ -1323,8 +1313,8 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             return
 
         async with self._guild_lock(guild.id):
-            # Re-check under the lock — a command or another cycle may have
-            # started recording for this guild while we were scanning channels.
+            # Re-check under the lock — another cycle may have started recording
+            # while we were scanning channels.
             if guild.id in self.recorders:
                 return
             try:
@@ -1384,7 +1374,6 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
         )
 
         if not active_consented:
-            # No consented users left — stop recording
             async with self._guild_lock(guild_id):
                 recorder = self.recorders.pop(guild_id, None)
                 if recorder:
@@ -1394,6 +1383,19 @@ class VoiceDatabase(commands.Cog, name="voicedatabase"):
             logger.info(
                 f"Auto-stopped recording in {member.guild.name} — no consented users remain"
             )
+
+
+async def _report_modal_error(interaction: discord.Interaction, error: Exception) -> None:
+    """Report a modal failure via whichever channel is still valid — on_submit can
+    raise either side of its defer(), so the response slot may already be spent."""
+    embed = discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except discord.HTTPException as e:
+        logger.debug(f"Could not deliver modal error to user: {e}")
 
 
 class _PlayModal(discord.ui.Modal, title="Play Clip"):
@@ -1497,13 +1499,7 @@ class _PlayModal(discord.ui.Modal, title="Play Clip"):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.error(f"PlayModal error: {error}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
-                ephemeral=True,
-            )
-        except Exception:
-            pass
+        await _report_modal_error(interaction, error)
 
 
 class _DownloadModal(discord.ui.Modal, title="Download Clip"):
@@ -1581,13 +1577,7 @@ class _DownloadModal(discord.ui.Modal, title="Download Clip"):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.error(f"DownloadModal error: {error}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
-                ephemeral=True,
-            )
-        except Exception:
-            pass
+        await _report_modal_error(interaction, error)
 
 
 class _FavoriteModal(discord.ui.Modal, title="Add to Favorites"):
@@ -1666,13 +1656,7 @@ class _FavoriteModal(discord.ui.Modal, title="Add to Favorites"):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.error(f"FavoriteModal error: {error}", exc_info=True)
-        try:
-            await interaction.response.send_message(
-                embed=discord.Embed(description=f"Something went wrong: `{error}`", color=0xED4245),
-                ephemeral=True,
-            )
-        except Exception:
-            pass
+        await _report_modal_error(interaction, error)
 
 
 class _PaginatedSelectView(discord.ui.View):
@@ -1752,8 +1736,7 @@ class _ClipSelectView(_PaginatedSelectView):
         super().__init__(invoker_id, len(segments))
         self.cog = cog
         self.segments = segments
-        # When results span more than one calendar day (Eastern), show the date
-        # alongside each time so users can tell which day a segment is from.
+        # Results spanning multiple days need the date shown alongside each time.
         self.multi_day = len({datetime.fromtimestamp(s[4], tz=EASTERN).date() for s in segments}) > 1
         self.target_user = target_user
         self.date = date
@@ -1764,6 +1747,14 @@ class _ClipSelectView(_PaginatedSelectView):
     def _page_segments(self):
         start = self.page * self.per_page
         return self.segments[start:start + self.per_page]
+
+    @staticmethod
+    def _default_duration(seg) -> str:
+        """Modal duration default: segment length rounded up to whole minutes (min 1).
+        An ongoing segment has no known length, so it falls back to 1."""
+        if seg[5] is None:
+            return "1"
+        return str(max(1, math.ceil((seg[5] - seg[4]) / 60)))
 
     def _fmt_start(self, start_dt) -> str:
         """Start-time label — prefixes the date when results span multiple days."""
@@ -1805,8 +1796,8 @@ class _ClipSelectView(_PaginatedSelectView):
 
         self._add_pagination_buttons()
 
-        # ⭐ favorite toggle — lets the user save a clip without playing/downloading it.
-        # Auto-flows to its own row (the select fills row 0, pagination fills row 1).
+        # Saves a clip without playing/downloading it. Auto-flows to its own row
+        # (the select fills row 0, pagination row 1).
         if self.mode in ("play", "download"):
             if self.favorite_mode:
                 fav_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary)
@@ -1858,16 +1849,12 @@ class _ClipSelectView(_PaginatedSelectView):
         logger.debug(f"ClipSelectView: Selected segment id={selected_id} mode={self.mode} favorite={self.favorite_mode}")
 
         if self.favorite_mode:
-            if seg[5] is not None:
-                default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))
-            else:
-                default_dur = "1"
             modal = _FavoriteModal(
                 cog=self.cog,
                 owner_id=self.invoker_id,
                 seg=seg,
                 target_user=self.target_user,
-                default_duration=default_dur,
+                default_duration=self._default_duration(seg),
             )
             await interaction.response.send_modal(modal)
             return
@@ -1889,10 +1876,7 @@ class _ClipSelectView(_PaginatedSelectView):
                 await interaction.followup.send(chunk)
             return
 
-        if seg[5] is not None:
-            default_dur = str(max(1, int((seg[5] - seg[4]) // 60) + (1 if (seg[5] - seg[4]) % 60 else 0)))
-        else:
-            default_dur = "1"
+        default_dur = self._default_duration(seg)
 
         if self.mode == "download":
             modal = _DownloadModal(
@@ -2006,7 +1990,7 @@ class _FavoriteSelectView(_PaginatedSelectView):
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
             return
 
-        # Re-derive the exact clip from the anchor segment (shared by play + download).
+        # Re-derive the exact clip from the anchor segment.
         seg = await self.cog.bot.database.get_segment_by_id(segment_id)
         if seg is None:
             await interaction.response.send_message(
@@ -2087,7 +2071,7 @@ class _FavoriteSelectView(_PaginatedSelectView):
                 color=0x57F287,
             )
         )
-        # _play_audio_in_voice handles VC connect/reuse, chimes, and clip cleanup.
+        # Handles VC connect/reuse, chimes, and clip cleanup.
         error = await self.cog._play_audio_in_voice(guild, voice_channel, clip_path)
         if error:
             await interaction.followup.send(
